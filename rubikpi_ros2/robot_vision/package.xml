@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>robot_vision_camera</name>
+  <version>1.0.0</version>
+  <description>ROS2 robot vision camera node that reads H.264 streams from shared memory and publishes raw and compressed images</description>
+  <maintainer email="your.email@example.com">Your Name</maintainer>
+  <license>MIT</license>
+
+  <!-- Build dependencies -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  
+  <!-- ROS2 dependencies -->
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  
+  <!-- System dependencies -->
+  <build_depend>libopencv-dev</build_depend>
+  <exec_depend>libopencv-dev</exec_depend>
+  
+  <build_depend>libgstreamer1.0-dev</build_depend>
+  <exec_depend>libgstreamer1.0-0</exec_depend>
+  
+  <build_depend>libgstreamer-plugins-base1.0-dev</build_depend>
+  <exec_depend>libgstreamer-plugins-base1.0-0</exec_depend>
+  
+  <build_depend>gstreamer1.0-plugins-good</build_depend>
+  <exec_depend>gstreamer1.0-plugins-good</exec_depend>
+  
+  <build_depend>gstreamer1.0-plugins-bad</build_depend>
+  <exec_depend>gstreamer1.0-plugins-bad</exec_depend>
+  
+  <build_depend>gstreamer1.0-plugins-ugly</build_depend>
+  <exec_depend>gstreamer1.0-plugins-ugly</exec_depend>
+  
+  <build_depend>gstreamer1.0-libav</build_depend>
+  <exec_depend>gstreamer1.0-libav</exec_depend>
+
+  <!-- Test dependencies -->
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
