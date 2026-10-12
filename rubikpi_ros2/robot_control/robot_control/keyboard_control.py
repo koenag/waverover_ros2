@@ -47,6 +47,39 @@ class KeyboardControllerNode(Node):
 Publishing motor commands on topic: motor_commands
 """
         self.get_logger().info(instructions)
+
+    def euler_to_quaternion(roll, pitch, yaw):
+        """
+        Convert Euler angles (roll, pitch, yaw) in degrees to quaternion
+        
+        Args:
+            roll (float): Roll angle in degrees (rotation around X-axis)
+            pitch (float): Pitch angle in degrees (rotation around Y-axis)  
+            yaw (float): Yaw angle in degrees (rotation around Z-axis)
+        
+        Returns:
+            tuple: (w, x, y, z) quaternion components
+        """
+        # Convert degrees to radians (in 2D so we're only using yaw)
+        roll_rad = 0
+        pitch_rad = 0
+        yaw_rad = math.radians(yaw)
+        
+        # Calculate half angles
+        cy = math.cos(yaw_rad * 0.5)    # cos(yaw/2)
+        sy = math.sin(yaw_rad * 0.5)    # sin(yaw/2)
+        cp = math.cos(pitch_rad * 0.5)  # cos(pitch/2)
+        sp = math.sin(pitch_rad * 0.5)  # sin(pitch/2)
+        cr = math.cos(roll_rad * 0.5)   # cos(roll/2)
+        sr = math.sin(roll_rad * 0.5)   # sin(roll/2)
+        
+        # Quaternion multiplication (ZYX rotation order)
+        w = cr * cp * cy + sr * sp * sy
+        x = sr * cp * cy - cr * sp * sy
+        y = cr * sp * cy + sr * cp * sy
+        z = cr * cp * sy - sr * sp * cy
+        
+        return w, x, y, z
     
     def on_press(self, key):
         """press key callback"""
