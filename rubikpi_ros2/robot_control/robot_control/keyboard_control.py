@@ -17,10 +17,7 @@ def parse_waypoints(data):
 data = """0,0,0
 1,0,0
 1,1,1.57
-2,1,0
-2,2,-1.57
-1,1,-0.78
-0,0,0"""
+2,1,0"""
 
 waypoints = parse_waypoints(data)
 print(waypoints)
@@ -53,10 +50,7 @@ class KeyboardControllerNode(Node):
         
         
         # setup timer to publish commands at 20Hz
-        self.timer = self.create_timer(0.05, self.publish_motor_commands)  # 20Hz
-
-        # Run the control algorithm every 0.05 seconds
-        self.control_timer = self.create_timer(0.05, self.control_step)
+        self.timer = self.create_timer(0.05, self.update)
         
         self.get_logger().info('Keyboard Controller Node started')
         self.print_instructions()
@@ -80,7 +74,9 @@ Publishing motor commands on topic: motor_commands
 
 
 
-    def quintic_coefficients(self, x0, xf, T):
+    def quintic_coefficients(self, p0, pf, d0, df):
+        T = 1.0  # Geometric parameter u from 0 to 1
+
         A = np.array([
             [1, 0, 0, 0, 0, 0],
             [0, 1, 0, 0, 0, 0],
@@ -90,11 +86,14 @@ Publishing motor commands on topic: motor_commands
             [0, 0, 2, 6*T, 12*T**2, 20*T**3]
         ], dtype=float)
 
-        b = np.array([x0, 0, 0, xf, 0, 0], dtype=float)
+        b = np.array([p0, d0, 0, pf, df, 0], dtype=float)
 
         return np.linalg.solve(A, b)
-        
-    
+
+    def update(self):
+        self.control_step()
+        self.publish_motor_commands()
+       
     
     def control_step(self):
         if self.segment_index >= len(waypoints) - 1:
@@ -104,21 +103,39 @@ Publishing motor commands on topic: motor_commands
 
         x0, y0, r0 = waypoints[self.segment_index]
         xf, yf, rf = waypoints[self.segment_index + 1]
+        print(f"Segment {self.segment_index}: Start({x0}, {y0}, {r0}) -> End({xf}, {yf}, {rf})")
 
-        # Generate coefficients once when a segment begins
         if self.t == 0.0:
-            self.x_t = self.quintic_coefficients(x0, xf, self.T)
-            self.y_t = self.quintic_coefficients(y0, yf, self.T)
+            # Geometric tangent length (meters)
+            d = 1.0
+
+            self.x_t = self.quintic_coefficients(
+                x0, xf,
+                d * math.cos(r0),
+                d * math.cos(rf)
+            )
+
+            self.y_t = self.quintic_coefficients(
+                y0, yf,
+                d * math.sin(r0),
+                d * math.sin(rf)
+            )
 
             self.vx_t = np.polynomial.polynomial.polyder(self.x_t)
             self.vy_t = np.polynomial.polynomial.polyder(self.y_t)
             self.ax_t = np.polynomial.polynomial.polyder(self.vx_t)
             self.ay_t = np.polynomial.polynomial.polyder(self.vy_t)
 
-        vx = np.polynomial.polynomial.polyval(self.t, self.vx_t)
-        vy = np.polynomial.polynomial.polyval(self.t, self.vy_t)
-        ax = np.polynomial.polynomial.polyval(self.t, self.ax_t)
-        ay = np.polynomial.polynomial.polyval(self.t, self.ay_t)
+            print(f"Quintic coefficients for segment {self.segment_index}:")
+            print(f"  x(t) = {self.x_t}")
+            print(f"  y(t) = {self.y_t}")
+
+        u = min(self.t / self.T, 1.0)
+        vx = np.polynomial.polynomial.polyval(u, self.vx_t) / self.T
+        vy = np.polynomial.polynomial.polyval(u, self.vy_t) / self.T
+
+        ax = np.polynomial.polynomial.polyval(u, self.ax_t) / self.T**2
+        ay = np.polynomial.polynomial.polyval(u, self.ay_t) / self.T**2
 
         speed_sq = vx**2 + vy**2
 
@@ -130,8 +147,26 @@ Publishing motor commands on topic: motor_commands
         v = np.hypot(vx, vy)
         b = 0.127
 
-        self.current_L = v - b * omega / 2
-        self.current_R = v + b * omega / 2
+        # Calibration parameters (replace after measuring)
+        SPEED_SCALE = 1.0
+        DRIFT_CORRECTION = 1.0
+        TURN_SCALE = 1.5
+
+        # Desired physical left/right wheel speeds (m/s)
+        turn = TURN_SCALE * b * omega / 2
+
+        left_mps = v - turn
+        right_mps = v + turn
+
+        # Convert to normalized motor commands and correct drift
+        L = SPEED_SCALE * left_mps
+        R = SPEED_SCALE * DRIFT_CORRECTION * right_mps
+
+        # Enforce the WaveRover's motor limits
+        scale = max(1.0, abs(L) / 0.5, abs(R) / 0.5)
+
+        self.current_L = L / scale
+        self.current_R = R / scale
 
         self.t += self.dt
 
