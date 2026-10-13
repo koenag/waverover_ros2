@@ -1,10 +1,10 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
-from pynput.keyboard import Key, Listener
+#from pynput.keyboard import Key, Listener
 import threading
 import math
-
+import numpy as np
 
 
 def parse_waypoints(data):
@@ -43,10 +43,20 @@ class KeyboardControllerNode(Node):
         self.running = True
         
         # start keyboard listener
-        self.start_keyboard_listener()
+        #self.start_keyboard_listener()
+
+        # Time/trajectory state
+        self.segment_index = 0
+        self.t = 0.0
+        self.dt = 0.05
+        self.T = 10.0
+        
         
         # setup timer to publish commands at 20Hz
         self.timer = self.create_timer(0.05, self.publish_motor_commands)  # 20Hz
+
+        # Run the control algorithm every 0.05 seconds
+        self.control_timer = self.create_timer(0.05, self.control_step)
         
         self.get_logger().info('Keyboard Controller Node started')
         self.print_instructions()
@@ -68,40 +78,73 @@ Publishing motor commands on topic: motor_commands
 """
         self.get_logger().info(instructions)
 
-    def euler_to_quaternion(roll, pitch, yaw):
-        """
-        Convert Euler angles (roll, pitch, yaw) in degrees to quaternion
+
+
+    def quintic_coefficients(self, x0, xf, T):
+        A = np.array([
+            [1, 0, 0, 0, 0, 0],
+            [0, 1, 0, 0, 0, 0],
+            [0, 0, 2, 0, 0, 0],
+            [1, T, T**2, T**3, T**4, T**5],
+            [0, 1, 2*T, 3*T**2, 4*T**3, 5*T**4],
+            [0, 0, 2, 6*T, 12*T**2, 20*T**3]
+        ], dtype=float)
+
+        b = np.array([x0, 0, 0, xf, 0, 0], dtype=float)
+
+        return np.linalg.solve(A, b)
         
-        Args:
-            roll (float): Roll angle in degrees (rotation around X-axis)
-            pitch (float): Pitch angle in degrees (rotation around Y-axis)  
-            yaw (float): Yaw angle in degrees (rotation around Z-axis)
-        
-        Returns:
-            tuple: (w, x, y, z) quaternion components
-        """
-        # Convert degrees to radians (in 2D so we're only using yaw)
-        roll_rad = 0
-        pitch_rad = 0
-        yaw_rad = math.radians(yaw)
-        
-        # Calculate half angles
-        cy = math.cos(yaw_rad * 0.5)    # cos(yaw/2)
-        sy = math.sin(yaw_rad * 0.5)    # sin(yaw/2)
-        cp = math.cos(pitch_rad * 0.5)  # cos(pitch/2)
-        sp = math.sin(pitch_rad * 0.5)  # sin(pitch/2)
-        cr = math.cos(roll_rad * 0.5)   # cos(roll/2)
-        sr = math.sin(roll_rad * 0.5)   # sin(roll/2)
-        
-        # Quaternion multiplication (ZYX rotation order)
-        w = cr * cp * cy + sr * sp * sy
-        x = sr * cp * cy - cr * sp * sy
-        y = cr * sp * cy + sr * cp * sy
-        z = cr * cp * sy - sr * sp * cy
-        
-        return w, x, y, z
     
-    def on_press(self, key):
+    
+    def control_step(self):
+        if self.segment_index >= len(waypoints) - 1:
+            self.current_L = 0.0
+            self.current_R = 0.0
+            return
+
+        x0, y0, r0 = waypoints[self.segment_index]
+        xf, yf, rf = waypoints[self.segment_index + 1]
+
+        # Generate coefficients once when a segment begins
+        if self.t == 0.0:
+            self.x_t = self.quintic_coefficients(x0, xf, self.T)
+            self.y_t = self.quintic_coefficients(y0, yf, self.T)
+
+            self.vx_t = np.polynomial.polynomial.polyder(self.x_t)
+            self.vy_t = np.polynomial.polynomial.polyder(self.y_t)
+            self.ax_t = np.polynomial.polynomial.polyder(self.vx_t)
+            self.ay_t = np.polynomial.polynomial.polyder(self.vy_t)
+
+        vx = np.polynomial.polynomial.polyval(self.t, self.vx_t)
+        vy = np.polynomial.polynomial.polyval(self.t, self.vy_t)
+        ax = np.polynomial.polynomial.polyval(self.t, self.ax_t)
+        ay = np.polynomial.polynomial.polyval(self.t, self.ay_t)
+
+        speed_sq = vx**2 + vy**2
+
+        if speed_sq > 1e-8:
+            omega = (vx * ay - vy * ax) / speed_sq
+        else:
+            omega = 0.0
+
+        v = np.hypot(vx, vy)
+        b = 0.127
+
+        self.current_L = v - b * omega / 2
+        self.current_R = v + b * omega / 2
+
+        self.t += self.dt
+
+        if self.t > self.T:
+            self.segment_index += 1
+            self.t = 0.0
+    
+
+
+        
+
+    '''def on_press(self, key):
+
         """press key callback"""
         try:
             if hasattr(key, "char") and key.char:
@@ -126,9 +169,9 @@ Publishing motor commands on topic: motor_commands
                     self.pressed_keys.clear()
                     
         except Exception as e:
-            self.get_logger().error(f'Error in on_press: {str(e)}')
+            self.get_logger().error(f'Error in on_press: {str(e)}')'''
     
-    def on_release(self, key):
+    '''def on_release(self, key):
         """release key callback"""
         try:
             if key == Key.esc:
@@ -148,9 +191,9 @@ Publishing motor commands on topic: motor_commands
                     self.get_logger().debug('All direction keys released, stopping')
                     
         except Exception as e:
-            self.get_logger().error(f'Error in on_release: {str(e)}')
+            self.get_logger().error(f'Error in on_release: {str(e)}')'''
     
-    def start_keyboard_listener(self):
+    '''def start_keyboard_listener(self):
         """Start keyboard listener in a separate thread"""
         def listener_thread():
             with Listener(on_press=self.on_press, on_release=self.on_release, suppress=True) as listener:
@@ -158,7 +201,7 @@ Publishing motor commands on topic: motor_commands
         
         self.listener_thread = threading.Thread(target=listener_thread, daemon=True)
         self.listener_thread.start()
-        self.get_logger().info('Keyboard listener started')
+        self.get_logger().info('Keyboard listener started')'''
     
     def publish_motor_commands(self):
         """Publish motor commands to ROS topic"""
