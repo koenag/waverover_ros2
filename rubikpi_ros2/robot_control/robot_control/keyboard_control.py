@@ -188,69 +188,6 @@ Publishing motor commands on topic: motor_commands
             self.segment_index += 1
             self.t = 0.0
     
-
-
-        
-
-    '''def on_press(self, key):
-
-        """press key callback"""
-        try:
-            if hasattr(key, "char") and key.char:
-                c = key.char.lower()
-                self.pressed_keys.add(c)
-                
-                if c == 'w':
-                    self.current_L = 0.3
-                    self.current_R = 0.3
-                elif c == 's':
-                    self.current_L = -0.3
-                    self.current_R = -0.3
-                elif c == 'a':
-                    self.current_L = -0.5
-                    self.current_R = 0.5
-                elif c == 'd':
-                    self.current_L = 0.5
-                    self.current_R = -0.5
-                elif c == 'x':
-                    self.current_L = 0.0
-                    self.current_R = 0.0
-                    self.pressed_keys.clear()
-                    
-        except Exception as e:
-            self.get_logger().error(f'Error in on_press: {str(e)}')'''
-    
-    '''def on_release(self, key):
-        """release key callback"""
-        try:
-            if key == Key.esc:
-                self.get_logger().info('ESC pressed, shutting down...')
-                self.running = False
-                rclpy.shutdown()
-                return False 
-            
-            if hasattr(key, "char") and key.char:
-                c = key.char.lower()
-                self.pressed_keys.discard(c)
-                
-                # stop if no direction keys are pressed
-                if not any(k in self.pressed_keys for k in 'wasd'):
-                    self.current_L = 0.0
-                    self.current_R = 0.0
-                    self.get_logger().debug('All direction keys released, stopping')
-                    
-        except Exception as e:
-            self.get_logger().error(f'Error in on_release: {str(e)}')'''
-    
-    '''def start_keyboard_listener(self):
-        """Start keyboard listener in a separate thread"""
-        def listener_thread():
-            with Listener(on_press=self.on_press, on_release=self.on_release, suppress=True) as listener:
-                listener.join()
-        
-        self.listener_thread = threading.Thread(target=listener_thread, daemon=True)
-        self.listener_thread.start()
-        self.get_logger().info('Keyboard listener started')'''
     
     def publish_motor_commands(self):
         """Publish motor commands to ROS topic"""
