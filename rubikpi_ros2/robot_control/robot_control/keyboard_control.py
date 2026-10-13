@@ -22,6 +22,10 @@ data = """0,0,0
 waypoints = parse_waypoints(data)
 print(waypoints)
 
+SPEED_SCALE = 1.0
+DRIFT_CORRECTION = 1.0
+TURN_SCALE = 1.5
+
 class KeyboardControllerNode(Node):
     def __init__(self):
         super().__init__('keyboard_controller_node')
@@ -93,43 +97,33 @@ Publishing motor commands on topic: motor_commands
     def update(self):
         self.control_step()
         self.publish_motor_commands()
-       
+
+    def get_velocity_acceleration_equations(self, x0, xf, y0, yf, r0, rf, d=1.0):
+        distance = math.hypot(xf - x0, yf - y0)
+        d = 0.5 * distance
+        
+        self.x_t = self.quintic_coefficients(
+            x0, xf,
+            d * math.cos(r0),
+            d * math.cos(rf)
+        )
+
+        self.y_t = self.quintic_coefficients(
+            y0, yf,
+            d * math.sin(r0),
+            d * math.sin(rf)
+        )
+
+        self.vx_t = np.polynomial.polynomial.polyder(self.x_t)
+        self.vy_t = np.polynomial.polynomial.polyder(self.y_t)
+        self.ax_t = np.polynomial.polynomial.polyder(self.vx_t)
+        self.ay_t = np.polynomial.polynomial.polyder(self.vy_t)
+
+        print(f"Quintic coefficients for segment {self.segment_index}:")
+        print(f"  x(t) = {self.x_t}")
+        print(f"  y(t) = {self.y_t}")
     
-    def control_step(self):
-        if self.segment_index >= len(waypoints) - 1:
-            self.current_L = 0.0
-            self.current_R = 0.0
-            return
-
-        x0, y0, r0 = waypoints[self.segment_index]
-        xf, yf, rf = waypoints[self.segment_index + 1]
-        print(f"Segment {self.segment_index}: Start({x0}, {y0}, {r0}) -> End({xf}, {yf}, {rf})")
-
-        if self.t == 0.0:
-            # Geometric tangent length (meters)
-            d = 1.0
-
-            self.x_t = self.quintic_coefficients(
-                x0, xf,
-                d * math.cos(r0),
-                d * math.cos(rf)
-            )
-
-            self.y_t = self.quintic_coefficients(
-                y0, yf,
-                d * math.sin(r0),
-                d * math.sin(rf)
-            )
-
-            self.vx_t = np.polynomial.polynomial.polyder(self.x_t)
-            self.vy_t = np.polynomial.polynomial.polyder(self.y_t)
-            self.ax_t = np.polynomial.polynomial.polyder(self.vx_t)
-            self.ay_t = np.polynomial.polynomial.polyder(self.vy_t)
-
-            print(f"Quintic coefficients for segment {self.segment_index}:")
-            print(f"  x(t) = {self.x_t}")
-            print(f"  y(t) = {self.y_t}")
-
+    def eval_vel_acc_at_t(self):
         u = min(self.t / self.T, 1.0)
         vx = np.polynomial.polynomial.polyval(u, self.vx_t) / self.T
         vy = np.polynomial.polynomial.polyval(u, self.vy_t) / self.T
@@ -137,21 +131,20 @@ Publishing motor commands on topic: motor_commands
         ax = np.polynomial.polynomial.polyval(u, self.ax_t) / self.T**2
         ay = np.polynomial.polynomial.polyval(u, self.ay_t) / self.T**2
 
+        return vx, vy, ax, ay, np.hypot(vx, vy)
+        
+        
+        
+    def get_angular_velocity(self, vx, vy, ax, ay):
         speed_sq = vx**2 + vy**2
-
+    
         if speed_sq > 1e-8:
             omega = (vx * ay - vy * ax) / speed_sq
         else:
             omega = 0.0
-
-        v = np.hypot(vx, vy)
-        b = 0.127
-
-        # Calibration parameters (replace after measuring)
-        SPEED_SCALE = 1.0
-        DRIFT_CORRECTION = 1.0
-        TURN_SCALE = 1.5
-
+        return omega
+    
+    def get_left_right_speed(self, v, b, omega):
         # Desired physical left/right wheel speeds (m/s)
         turn = TURN_SCALE * b * omega / 2
 
@@ -167,7 +160,28 @@ Publishing motor commands on topic: motor_commands
 
         self.current_L = L / scale
         self.current_R = R / scale
+        
+    def control_step(self):
+        if self.segment_index >= len(waypoints) - 1:
+            self.current_L = 0.0
+            self.current_R = 0.0
+            return
 
+        x0, y0, r0 = waypoints[self.segment_index]
+        xf, yf, rf = waypoints[self.segment_index + 1]
+        print(f"Segment {self.segment_index}: Start({x0}, {y0}, {r0}) -> End({xf}, {yf}, {rf})")
+
+        if self.t == 0.0:
+            # Geometric tangent length (meters)
+            self.get_velocity_acceleration_equations(x0, xf, y0, yf, r0, rf, 1.0)
+
+        vx, vy, ax, ay, v =  self.eval_vel_acc_at_t()
+
+        omega = self.get_angular_velocity(vx, vy, ax, ay)
+        
+        b = 0.127
+        self.get_left_right_speed(v, b, omega)
+    
         self.t += self.dt
 
         if self.t > self.T:
