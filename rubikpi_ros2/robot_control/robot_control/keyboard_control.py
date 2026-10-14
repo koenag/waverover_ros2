@@ -4,7 +4,7 @@ from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 import math
 import numpy as np
-
+import time
 
 def parse_waypoints(data):
     return [tuple(map(float, line.split(','))) for line in data.strip().splitlines()]
@@ -41,7 +41,7 @@ MAX_MOTOR_COMMAND = 0.5
 # Target physical velocities used for timed movements.
 # Both produce motor commands outside the measured ~0.10 dead zone.
 DRIVE_SPEED = 0.30      # m/s
-TURN_SPEED = 3.5      # rad/s
+TURN_SPEED = 3.0      # rad/s
 # ===== END ADDED =====
 
 
@@ -208,7 +208,7 @@ class KeyboardControllerNode(Node):
 
                 self.get_logger().info(
                     f'ROTATION START: {direction}, '
-                    f'angle={angle_deg:.1f} degrees, '
+                    f'rotating at angle={angle_deg:.1f} degrees, '
                     f'omega={omega:.3f} rad/s'
                 )
 
@@ -227,6 +227,7 @@ class KeyboardControllerNode(Node):
         self.action_t += self.dt
 
         if self.action_t >= duration:
+            time.sleep(1)  # Small delay to ensure the last command is sent
             self.get_logger().info(
                 f'ACTION COMPLETED: {description}'
             )
@@ -264,7 +265,7 @@ class KeyboardControllerNode(Node):
 
         # ===== ADDED: report unrounded commands and requested v/omega every ~1s =====
         self.log_count += 1
-        if self.log_count % 20 == 0:
+        if self.log_count % 2 == 0:
             self.get_logger().info(
                 f't={self.t:.2f} segment={self.segment_index} v={v:.4f} '
                 f'omega={omega:.4f} L={self.current_L:.4f} R={self.current_R:.4f}'
