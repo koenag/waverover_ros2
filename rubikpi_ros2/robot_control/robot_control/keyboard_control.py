@@ -13,7 +13,10 @@ def parse_waypoints(data):
 data = '''0,0,0
 1,0,0
 1,1,1.57
-2,1,0'''
+2,1,0
+2,2,-1.57
+1,1,-0.78
+0,0,0'''
 waypoints = parse_waypoints(data)
 
 # ===== MODIFIED (TRIAL CALIBRATION) =====
@@ -27,8 +30,8 @@ waypoints = parse_waypoints(data)
 # 0.14*(-0.0756) + 0.20*3.606 = 0.713 rad/s (nearly straight).
 # This model will not capture motor deadband / skid nonlinearity.
 CALIBRATION_MATRIX = np.array([
-    [ 0.55, 0.66],
-    [ -4.425, 4.475],
+    [0.6327, 0.8217],
+    [-4.343, 4.067],
 ], dtype=float)
 CALIBRATION_INVERSE = np.linalg.inv(CALIBRATION_MATRIX)
 MAX_MOTOR_COMMAND = 0.5
@@ -38,7 +41,7 @@ MAX_MOTOR_COMMAND = 0.5
 # Target physical velocities used for timed movements.
 # Both produce motor commands outside the measured ~0.10 dead zone.
 DRIVE_SPEED = 0.30      # m/s
-TURN_SPEED = 3.0       # rad/s
+TURN_SPEED = 3.5      # rad/s
 # ===== END ADDED =====
 
 
@@ -51,7 +54,7 @@ class KeyboardControllerNode(Node):
         self.running = True
         self.segment_index = 0
         self.t = 0.0
-        self.dt = 0.05
+        self.dt = 0.10
         # ===== MODIFIED (SPEED): Faster segments, checked against +/-0.5 limit =====
         self.T = 5.0  # First straight segment; turns use 8.0 s
         # ===== END MODIFIED =====
@@ -142,10 +145,9 @@ class KeyboardControllerNode(Node):
             dy = yf - y0
             distance = math.hypot(dx, dy)
 
-            # Direction of the straight line to the next waypoint
             target_heading = math.atan2(dy, dx) if distance > 1e-6 else r0
 
-            # Initial turn to face the waypoint
+            # Initial rotation
             initial_turn = wrap_angle(target_heading - r0)
 
             if abs(initial_turn) > 0.02:
@@ -156,7 +158,7 @@ class KeyboardControllerNode(Node):
                     f'Segment {i}: Initial turn'
                 ))
 
-            # Drive straight to the waypoint
+            # Drive straight
             if distance > 1e-6:
                 actions.append((
                     DRIVE_SPEED, 0.0,
@@ -164,7 +166,7 @@ class KeyboardControllerNode(Node):
                     f'Segment {i}: Drive straight'
                 ))
 
-            # Final turn to match the requested waypoint heading
+            # Final rotation
             final_turn = wrap_angle(rf - target_heading)
 
             if abs(final_turn) > 0.02:
@@ -186,11 +188,30 @@ class KeyboardControllerNode(Node):
         v, omega, duration, description = self.actions[self.action_index]
 
         if self.action_t == 0.0:
+            # Identify the waypoint pair
+            segment_number = int(description.split(':')[0].split()[1])
+
+            start = waypoints[segment_number]
+            end = waypoints[segment_number + 1]
+
             self.get_logger().info(
-                f'{description}, T={duration:.2f}s, v={v:.3f}, omega={omega:.3f}'
+                f'\n===== SEGMENT {segment_number} =====\n'
+                f'FROM waypoint {segment_number}: {start}\n'
+                f'TO waypoint {segment_number + 1}: {end}\n'
+                f'Action: {description}\n'
+                f'Duration: {duration:.3f}s'
             )
 
-        # Reuse existing calibration conversion
+            if abs(omega) > 0.001:
+                direction = 'LEFT (CCW)' if omega > 0 else 'RIGHT (CW)'
+                angle_deg = math.degrees(omega * duration)
+
+                self.get_logger().info(
+                    f'ROTATION START: {direction}, '
+                    f'angle={angle_deg:.1f} degrees, '
+                    f'omega={omega:.3f} rad/s'
+                )
+
         self.get_left_right_speed(v, omega)
 
         if self.calibration_fault:
@@ -199,21 +220,24 @@ class KeyboardControllerNode(Node):
         self.log_count += 1
         if self.log_count % 20 == 0:
             self.get_logger().info(
-                f'{description}: t={self.action_t:.2f} '
-                f'L={self.current_L:.4f} R={self.current_R:.4f}'
+                f'{description}: t={self.action_t:.2f}, '
+                f'L={self.current_L:.4f}, R={self.current_R:.4f}'
             )
 
         self.action_t += self.dt
 
         if self.action_t >= duration:
+            self.get_logger().info(
+                f'ACTION COMPLETED: {description}'
+            )
+
             self.action_index += 1
             self.action_t = 0.0
 
             if self.action_index >= len(self.actions):
                 self.current_L = 0.0
                 self.current_R = 0.0
-                self.get_logger().info('All movements completed')
-    # ===== END ADDED =====
+                self.get_logger().info('ALL WAYPOINTS COMPLETED')
 
     # ===== ORIGINAL QUINTIC CONTROLLER (PRESERVED) =====
     # Renamed from control_step so we can switch between controllers.
