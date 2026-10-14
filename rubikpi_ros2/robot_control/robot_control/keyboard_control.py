@@ -30,9 +30,8 @@ MAX_MOTOR_COMMAND = 0.5 # Cannot exceed this value
 
 # Target physical velocities used for timed movements.
 # Both produce motor commands outside the measured 0.10 dead zone.
-DRIVE_SPEED = 0.30      # m/s
-TURN_SPEED = 3.0      # rad/s
-
+DRIVE_SPEED = 0.30      # the linear velocity how fsat we want the robot to turn
+TURN_SPEED = 3.5      # angular velocity how fast we awnt to robot to turn 
 
 class KeyboardControllerNode(Node):
     def __init__(self):
