@@ -1,226 +1,268 @@
+
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
-#from pynput.keyboard import Key, Listener
-import threading
 import math
 import numpy as np
 
 
 def parse_waypoints(data):
-    return [
-        tuple(map(float, line.split(",")))
-        for line in data.strip().splitlines()
-    ]
+    return [tuple(map(float, line.split(','))) for line in data.strip().splitlines()]
 
 
-data = """0,0,0
+data = '''0,0,0
 1,0,0
 1,1,1.57
-2,1,0"""
-
+2,1,0'''
 waypoints = parse_waypoints(data)
-print(waypoints)
 
-SPEED_SCALE = 1.0
-DRIFT_CORRECTION = 1.0
-TURN_SCALE = 1.5
+# ===== MODIFIED (TRIAL CALIBRATION) =====
+# Empirical *starting estimate*, NOT a measured or validated matrix.
+# [v, omega]^T = CALIBRATION_MATRIX @ [L, R]^T
+# The first row has POSITIVE coefficients for both forward-driving sides.
+# 0.14*0.55 + 0.20*0.66 = 0.209 m/s (measured about 0.207).
+# MODIFIED: invert angular row because the observed rover turn direction
+# is opposite to the previously assumed motor sign convention.
+# Confirm with a short turn test before running the whole path.
+# 0.14*(-0.0756) + 0.20*3.606 = 0.713 rad/s (nearly straight).
+# This model will not capture motor deadband / skid nonlinearity.
+CALIBRATION_MATRIX = np.array([
+    [ 0.55, 0.66],
+    [ -4.425, 4.475],
+], dtype=float)
+CALIBRATION_INVERSE = np.linalg.inv(CALIBRATION_MATRIX)
+MAX_MOTOR_COMMAND = 0.5
+# ===== END MODIFIED =====
+
+# ===== ADDED (SIMPLE MOVEMENT) =====
+# Target physical velocities used for timed movements.
+# Both produce motor commands outside the measured ~0.10 dead zone.
+DRIVE_SPEED = 0.30      # m/s
+TURN_SPEED = 3.0       # rad/s
+# ===== END ADDED =====
+
 
 class KeyboardControllerNode(Node):
     def __init__(self):
         super().__init__('keyboard_controller_node')
-        
-        # create publisher for motor commands
-        self.publisher = self.create_publisher(
-            Float32MultiArray,
-            'motor_commands',
-            10
-        )
-        
-        # keyboard state
-        self.pressed_keys = set()
+        self.publisher = self.create_publisher(Float32MultiArray, 'motor_commands', 10)
         self.current_L = 0.0
         self.current_R = 0.0
         self.running = True
-        
-        # start keyboard listener
-        #self.start_keyboard_listener()
-
-        # Time/trajectory state
         self.segment_index = 0
         self.t = 0.0
         self.dt = 0.05
-        self.T = 10.0
-        
-        
-        # setup timer to publish commands at 20Hz
-        self.timer = self.create_timer(0.05, self.update)
-        
-        self.get_logger().info('Keyboard Controller Node started')
-        self.print_instructions()
-        
-    def print_instructions(self):
-        """print control instructions"""
-        instructions = """
-========================================
-   🚗  Robot Keyboard Controller
-----------------------------------------
-   W : Forward  (L=0.3, R=0.3)
-   S : Backward (L=-0.3, R=-0.3)
-   A : Turn Left (L=-0.5, R=0.5)
-   D : Turn Right (L=0.5, R=-0.5)
-   X : Stop (L=0.0, R=0.0)
-  ESC: Quit
-========================================
-Publishing motor commands on topic: motor_commands
-"""
-        self.get_logger().info(instructions)
+        # ===== MODIFIED (SPEED): Faster segments, checked against +/-0.5 limit =====
+        self.T = 5.0  # First straight segment; turns use 8.0 s
+        # ===== END MODIFIED =====
+        self.calibration_fault = False
+        # ===== ADDED: log at readable 4-decimal precision, not every 20 Hz callback =====
+        self.log_count = 0
+        # ===== END ADDED =====
 
+        # ===== ADDED (SIMPLE MOVEMENT) =====
+        self.actions = self.build_simple_actions()
+        self.action_index = 0
+        self.action_t = 0.0
+        # ===== END ADDED =====
 
+        self.timer = self.create_timer(self.dt, self.update)
+        self.get_logger().info('Waypoint Controller Node started (SIMPLE MOVEMENT)')
 
     def quintic_coefficients(self, p0, pf, d0, df):
-        T = 1.0  # Geometric parameter u from 0 to 1
-
+        T = 1.0
         A = np.array([
             [1, 0, 0, 0, 0, 0],
             [0, 1, 0, 0, 0, 0],
             [0, 0, 2, 0, 0, 0],
             [1, T, T**2, T**3, T**4, T**5],
             [0, 1, 2*T, 3*T**2, 4*T**3, 5*T**4],
-            [0, 0, 2, 6*T, 12*T**2, 20*T**3]
+            [0, 0, 2, 6*T, 12*T**2, 20*T**3],
         ], dtype=float)
-
         b = np.array([p0, d0, 0, pf, df, 0], dtype=float)
-
         return np.linalg.solve(A, b)
 
     def update(self):
-        self.control_step()
+        # self.control_step_quintic()  # Original controller
+        self.control_step_simple()      # ADDED: Simple movement controller
         self.publish_motor_commands()
 
     def get_velocity_acceleration_equations(self, x0, xf, y0, yf, r0, rf, d=1.0):
         distance = math.hypot(xf - x0, yf - y0)
-        d = 0.5 * distance
-        
-        self.x_t = self.quintic_coefficients(
-            x0, xf,
-            d * math.cos(r0),
-            d * math.cos(rf)
-        )
-
-        self.y_t = self.quintic_coefficients(
-            y0, yf,
-            d * math.sin(r0),
-            d * math.sin(rf)
-        )
-
+        d = 0.5 * distance  # Unchanged geometric tangents / waypoint headings
+        self.x_t = self.quintic_coefficients(x0, xf, d * math.cos(r0), d * math.cos(rf))
+        self.y_t = self.quintic_coefficients(y0, yf, d * math.sin(r0), d * math.sin(rf))
         self.vx_t = np.polynomial.polynomial.polyder(self.x_t)
         self.vy_t = np.polynomial.polynomial.polyder(self.y_t)
         self.ax_t = np.polynomial.polynomial.polyder(self.vx_t)
         self.ay_t = np.polynomial.polynomial.polyder(self.vy_t)
 
-        print(f"Quintic coefficients for segment {self.segment_index}:")
-        print(f"  x(t) = {self.x_t}")
-        print(f"  y(t) = {self.y_t}")
-    
     def eval_vel_acc_at_t(self):
         u = min(self.t / self.T, 1.0)
         vx = np.polynomial.polynomial.polyval(u, self.vx_t) / self.T
         vy = np.polynomial.polynomial.polyval(u, self.vy_t) / self.T
-
         ax = np.polynomial.polynomial.polyval(u, self.ax_t) / self.T**2
         ay = np.polynomial.polynomial.polyval(u, self.ay_t) / self.T**2
-
         return vx, vy, ax, ay, np.hypot(vx, vy)
-        
-        
-        
+
     def get_angular_velocity(self, vx, vy, ax, ay):
         speed_sq = vx**2 + vy**2
-    
         if speed_sq > 1e-8:
-            omega = (vx * ay - vy * ax) / speed_sq
-        else:
-            omega = 0.0
-        return omega
-    
-    def get_left_right_speed(self, v, b, omega):
-        # Desired physical left/right wheel speeds (m/s)
-        turn = TURN_SCALE * b * omega / 2
+            return (vx * ay - vy * ax) / speed_sq
+        return 0.0
 
-        left_mps = v - turn
-        right_mps = v + turn
+    def get_left_right_speed(self, v, omega):
+        # ===== MODIFIED: use trial inverse matrix, with transparent safety check =====
+        desired_velocity = np.array([v, omega], dtype=float)
+        L, R = CALIBRATION_INVERSE @ desired_velocity
+        if not np.all(np.isfinite([L, R])) or max(abs(L), abs(R)) > MAX_MOTOR_COMMAND:
+            self.current_L = 0.0
+            self.current_R = 0.0
+            self.calibration_fault = True
+            self.get_logger().error(
+                f'Unachievable command: v={v:.4f}, omega={omega:.4f}, L={L:.4f}, R={R:.4f}. Stopping.'
+            )
+            return
+        self.current_L = float(L)
+        self.current_R = float(R)
+        # ===== END MODIFIED =====
 
-        # Convert to normalized motor commands and correct drift
-        L = SPEED_SCALE * left_mps
-        R = SPEED_SCALE * DRIFT_CORRECTION * right_mps
+    # ===== ADDED (SIMPLE MOVEMENT) =====
+    def build_simple_actions(self):
+        actions = []
 
-        # Enforce the WaveRover's motor limits
-        scale = max(1.0, abs(L) / 0.5, abs(R) / 0.5)
+        def wrap_angle(angle):
+            return (angle + math.pi) % (2 * math.pi) - math.pi
 
-        self.current_L = L / scale
-        self.current_R = R / scale
-        
-    def control_step(self):
-        if self.segment_index >= len(waypoints) - 1:
+        for i in range(len(waypoints) - 1):
+            x0, y0, r0 = waypoints[i]
+            xf, yf, rf = waypoints[i + 1]
+
+            dx = xf - x0
+            dy = yf - y0
+            distance = math.hypot(dx, dy)
+
+            # Direction of the straight line to the next waypoint
+            target_heading = math.atan2(dy, dx) if distance > 1e-6 else r0
+
+            # Initial turn to face the waypoint
+            initial_turn = wrap_angle(target_heading - r0)
+
+            if abs(initial_turn) > 0.02:
+                omega = math.copysign(TURN_SPEED, initial_turn)
+                actions.append((
+                    0.0, omega,
+                    abs(initial_turn) / TURN_SPEED,
+                    f'Segment {i}: Initial turn'
+                ))
+
+            # Drive straight to the waypoint
+            if distance > 1e-6:
+                actions.append((
+                    DRIVE_SPEED, 0.0,
+                    distance / DRIVE_SPEED,
+                    f'Segment {i}: Drive straight'
+                ))
+
+            # Final turn to match the requested waypoint heading
+            final_turn = wrap_angle(rf - target_heading)
+
+            if abs(final_turn) > 0.02:
+                omega = math.copysign(TURN_SPEED, final_turn)
+                actions.append((
+                    0.0, omega,
+                    abs(final_turn) / TURN_SPEED,
+                    f'Segment {i}: Final turn'
+                ))
+
+        return actions
+
+    def control_step_simple(self):
+        if self.calibration_fault or self.action_index >= len(self.actions):
+            self.current_L = 0.0
+            self.current_R = 0.0
+            return
+
+        v, omega, duration, description = self.actions[self.action_index]
+
+        if self.action_t == 0.0:
+            self.get_logger().info(
+                f'{description}, T={duration:.2f}s, v={v:.3f}, omega={omega:.3f}'
+            )
+
+        # Reuse existing calibration conversion
+        self.get_left_right_speed(v, omega)
+
+        if self.calibration_fault:
+            return
+
+        self.log_count += 1
+        if self.log_count % 20 == 0:
+            self.get_logger().info(
+                f'{description}: t={self.action_t:.2f} '
+                f'L={self.current_L:.4f} R={self.current_R:.4f}'
+            )
+
+        self.action_t += self.dt
+
+        if self.action_t >= duration:
+            self.action_index += 1
+            self.action_t = 0.0
+
+            if self.action_index >= len(self.actions):
+                self.current_L = 0.0
+                self.current_R = 0.0
+                self.get_logger().info('All movements completed')
+    # ===== END ADDED =====
+
+    # ===== ORIGINAL QUINTIC CONTROLLER (PRESERVED) =====
+    # Renamed from control_step so we can switch between controllers.
+    def control_step_quintic(self):
+        if self.calibration_fault or self.segment_index >= len(waypoints) - 1:
             self.current_L = 0.0
             self.current_R = 0.0
             return
 
         x0, y0, r0 = waypoints[self.segment_index]
         xf, yf, rf = waypoints[self.segment_index + 1]
-        print(f"Segment {self.segment_index}: Start({x0}, {y0}, {r0}) -> End({xf}, {yf}, {rf})")
-
         if self.t == 0.0:
-            # Geometric tangent length (meters)
-            self.get_velocity_acceleration_equations(x0, xf, y0, yf, r0, rf, 1.0)
+            # ===== ADDED (SPEED): Slow down only on the sharper curves =====
+            self.T = 5.0 if self.segment_index == 0 else 8.0
+            # ===== END ADDED =====
+            self.get_velocity_acceleration_equations(x0, xf, y0, yf, r0, rf)
+            self.get_logger().info(f'Segment {self.segment_index}, T={self.T:.1f}s: ({x0},{y0},{r0}) -> ({xf},{yf},{rf})')
 
-        vx, vy, ax, ay, v =  self.eval_vel_acc_at_t()
-
+        vx, vy, ax, ay, v = self.eval_vel_acc_at_t()
         omega = self.get_angular_velocity(vx, vy, ax, ay)
-        
-        b = 0.127
-        self.get_left_right_speed(v, b, omega)
-    
-        self.t += self.dt
+        self.get_left_right_speed(v, omega)
+        if self.calibration_fault:
+            return
 
+        # ===== ADDED: report unrounded commands and requested v/omega every ~1s =====
+        self.log_count += 1
+        if self.log_count % 20 == 0:
+            self.get_logger().info(
+                f't={self.t:.2f} segment={self.segment_index} v={v:.4f} '
+                f'omega={omega:.4f} L={self.current_L:.4f} R={self.current_R:.4f}'
+            )
+        # ===== END ADDED =====
+        self.t += self.dt
         if self.t > self.T:
             self.segment_index += 1
             self.t = 0.0
-    
-    
+
     def publish_motor_commands(self):
-        """Publish motor commands to ROS topic"""
         if self.running and rclpy.ok():
-            try:
-                msg = Float32MultiArray()
-                msg.data = [self.current_L, self.current_R]
-                self.publisher.publish(msg)
-                
-                # Log only when commands change to reduce console spam
-                if hasattr(self, '_last_L') and hasattr(self, '_last_R'):
-                    if self._last_L != self.current_L or self._last_R != self.current_R:
-                        self.get_logger().info(f'Motor command: L={self.current_L:.2f}, R={self.current_R:.2f}')
-                else:
-                    self.get_logger().info(f'Motor command: L={self.current_L:.2f}, R={self.current_R:.2f}')
-                
-                self._last_L = self.current_L
-                self._last_R = self.current_R
-            except Exception as e:
-                # Context may be shutting down, ignore errors
-                if self.running:
-                    self.get_logger().error(f'Error publishing command: {str(e)}')
-    
+            msg = Float32MultiArray()
+            msg.data = [self.current_L, self.current_R]
+            self.publisher.publish(msg)
+
     def destroy_node(self):
-        """Cleanup operations when node is destroyed"""
         self.running = False
-        
-        # Send stop command before shutdown
         msg = Float32MultiArray()
         msg.data = [0.0, 0.0]
         self.publisher.publish(msg)
         self.get_logger().info('Stop command sent')
-        
         super().destroy_node()
 
 
@@ -232,20 +274,9 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        # If timer already destroyed the node, skip
-        if not getattr(node, "_already_destroyed", False):
-            try:
-                node.destroy_node()
-            except Exception:
-                pass
-
+        node.destroy_node()
         if rclpy.ok():
-            try:
-                rclpy.shutdown()
-            except Exception:
-                pass
-        return 0  # <-- ensure exit code 0
-
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
