@@ -21,8 +21,8 @@ waypoints = parse_waypoints(data)
 
 # Calibration matrix and its inverse, derived from empirical testing
 CALIBRATION_MATRIX = np.array([
-    [0.6327, 0.8217],
-    [-4.343, 4.067],
+    [0.565034, 0.733764],
+    [-4.08242, 3.82298],
 ], dtype=float)
 CALIBRATION_INVERSE = np.linalg.inv(CALIBRATION_MATRIX)
 
@@ -31,7 +31,7 @@ MAX_MOTOR_COMMAND = 0.5 # Cannot exceed this value
 # Target physical velocities used for timed movements.
 # Both produce motor commands outside the measured 0.10 dead zone.
 DRIVE_SPEED = 0.30      # the linear velocity how fsat we want the robot to turn
-TURN_SPEED = 3.5      # angular velocity how fast we awnt to robot to turn 
+TURN_SPEED = 3.0      # angular velocity how fast we awnt to robot to turn 
 
 class KeyboardControllerNode(Node):
     def __init__(self):
@@ -153,7 +153,10 @@ class KeyboardControllerNode(Node):
         actions = []
 
         def wrap_angle(angle):
-            return (angle + math.pi) % (2 * math.pi) - math.pi
+            wrapped = (angle + math.pi) % (2 * math.pi) - math.pi
+            if abs(wrapped + math.pi) < 0.01:
+                return math.pi
+            return wrapped
 
         for i in range(len(waypoints) - 1):
             x0, y0, r0 = waypoints[i]
@@ -175,6 +178,7 @@ class KeyboardControllerNode(Node):
                     abs(initial_turn) / TURN_SPEED,
                     f'Segment {i}: Initial turn'
                 ))
+                actions.append((0.0, 0.0, 0.4, 'Pause'))
 
             # Drive straight
             if distance > 1e-6:
@@ -194,6 +198,7 @@ class KeyboardControllerNode(Node):
                     abs(final_turn) / TURN_SPEED,
                     f'Segment {i}: Final turn'
                 ))
+                actions.append((0.0, 0.0, 0.4, 'Pause'))
 
         return actions
 
@@ -205,7 +210,7 @@ class KeyboardControllerNode(Node):
 
         v, omega, duration, description = self.actions[self.action_index]
 
-        if self.action_t == 0.0:
+        if self.action_t == 0.0 and description != 'Pause':
             # Identify the waypoint pair
             segment_number = int(description.split(':')[0].split()[1])
 
@@ -236,7 +241,7 @@ class KeyboardControllerNode(Node):
             return
 
         self.log_count += 1
-        if self.log_count % 20 == 0:
+        if self.log_count % 2 == 0:
             self.get_logger().info(
                 f'{description}: t={self.action_t:.2f}, '
                 f'L={self.current_L:.4f}, R={self.current_R:.4f}'
@@ -245,7 +250,7 @@ class KeyboardControllerNode(Node):
         self.action_t += self.dt
 
         if self.action_t >= duration:
-            time.sleep(1)  # Small delay to ensure the last command is sent
+            # time.sleep(1)  # Small delay to ensure the last command is sent
             self.get_logger().info(
                 f'ACTION COMPLETED: {description}'
             )
