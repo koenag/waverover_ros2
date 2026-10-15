@@ -19,10 +19,18 @@ data = '''0,0,0
 0,0,0'''
 waypoints = parse_waypoints(data)
 
-# Calibration matrix and its inverse, derived from empirical testing
+# ADDED/CHANGED: Physical differential-drive parameters (PROVISIONAL).
+# Replace all three with measured values before relying on the model.
+# Wheel separation b is an effective wheel-track width for skid-steer robots.
+WHEEL_BASE = 0.3077           # meters; EXAMPLE ONLY, not measured
+K_L = 1.1098 # m/s per motor-command unit; initial guess from old linear row
+K_R = 1.115 # m/s per motor-command unit; initial guess from old linear row
+
+# ADDED/CHANGED: Kinematic calibration matrix derived from b, kL, and kR.
+# [v, omega]^T = CALIBRATION_MATRIX @ [L, R]^T
 CALIBRATION_MATRIX = np.array([
-    [0.565034, 0.733764],
-    [-4.08242, 3.82298],
+    [K_L / 2.0, K_R / 2.0],
+    [-K_L / WHEEL_BASE, K_R / WHEEL_BASE],
 ], dtype=float)
 CALIBRATION_INVERSE = np.linalg.inv(CALIBRATION_MATRIX)
 
@@ -52,6 +60,9 @@ class KeyboardControllerNode(Node):
         self.action_index = 0
         self.action_t = 0.0
 
+        # ADDED: Predicted pose from the differential-drive kinematic model.
+        self.x, self.y, self.theta = waypoints[0]
+
         self.timer = self.create_timer(self.dt, self.update)
         self.get_logger().info('Waypoint Controller Node started (SIMPLE MOVEMENT)')
 
@@ -60,7 +71,7 @@ class KeyboardControllerNode(Node):
         self.control_step_simple()      # Simple movement controller
         self.publish_motor_commands()
 
-    # Compute left and right motor speeds from desired linear/angular velocities using the calibration matrix.
+    # CHANGED: Inverse differential-drive kinematics via the parameterized calibration matrix.
     def get_left_right_speed(self, v, omega):
             desired_velocity = np.array([v, omega], dtype=float)
             L, R = CALIBRATION_INVERSE @ desired_velocity
@@ -75,6 +86,14 @@ class KeyboardControllerNode(Node):
                 return
             self.current_L = float(L)
             self.current_R = float(R)
+
+    # ADDED: Integrate the planar differential-drive pose model.
+    # Prediction only: it uses commanded speeds, not sensor measurements.
+    def update_kinematic_pose(self, v, omega, dt):
+        theta_mid = self.theta + 0.5 * omega * dt
+        self.x += v * math.cos(theta_mid) * dt
+        self.y += v * math.sin(theta_mid) * dt
+        self.theta = (self.theta + omega * dt + math.pi) % (2 * math.pi) - math.pi
 
     # === QUINTIC POLYNOMIAL CONTROLLER ===
 
@@ -239,6 +258,10 @@ class KeyboardControllerNode(Node):
 
         if self.calibration_fault:
             return
+
+        # ADDED: Propagate predicted pose using the commanded motion.
+        # This does not change motor commands or action completion timing.
+        self.update_kinematic_pose(v, omega, self.dt)
 
         self.log_count += 1
         if self.log_count % 2 == 0:
