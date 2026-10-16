@@ -101,31 +101,35 @@ class KeyboardControllerNode(Node):
             # How much to initially rotate to get to next point
             initial_turn = wrap_angle(angle_to_next_point - r0)
 
+            t_initial = abs(initial_turn) / TURN_SPEED
             if abs(initial_turn) > 0.02: #TODO: test: change 0.02 to 0.0
                 omega = math.copysign(TURN_SPEED, initial_turn)
                 actions.append((
                     0.0, omega,
-                    abs(initial_turn) / TURN_SPEED,
+                    t_initial,
                     f'Segment {i}: Initial turn'
                 ))
                 actions.append((0.0, 0.0, 0.4, 'Pause')) # Temporary pause for movement distinction
 
+            t_drive = distance / DRIVE_SPEED
             # Drive straight 
             if distance > 1e-6: 
                 actions.append((
                     DRIVE_SPEED, 0.0,
-                    distance / DRIVE_SPEED,
+                    t_drive,
                     f'Segment {i}: Drive straight'
                 ))
 
+            
             # How much to rotate at the end to face desired direction
             final_turn = wrap_angle(rf - angle_to_next_point)
 
+            t_final  = abs(final_turn) / TURN_SPEED
             if abs(final_turn) > 0.02: #TODO: test: change 0.02 to 0.0
                 omega = math.copysign(TURN_SPEED, final_turn)
                 actions.append((
                     0.0, omega,
-                    abs(final_turn) / TURN_SPEED,
+                    t_final,
                     f'Segment {i}: Final turn'
                 ))
                 actions.append((0.0, 0.0, 0.4, 'Pause')) # Temporary pause for movement distinction
@@ -141,7 +145,7 @@ class KeyboardControllerNode(Node):
 
         v, omega, duration, description = self.actions[self.action_index]
 
-        # Get waypoints at beginning of segment (Also has one-time per segment logging)
+        # Get waypoints at beginning of segment (PURELY FOR LOGGING)
         if self.action_t == 0.0 and description != 'Pause':
             # Identify the waypoint pair
             segment_number = int(description.split(':')[0].split()[1])
