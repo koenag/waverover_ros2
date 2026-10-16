@@ -24,15 +24,7 @@ def parse_waypoints(file):
         data = f.read()
     return [tuple(map(float, line.split(','))) for line in data.strip().splitlines()]
 
-data = '''0,0,0
-1,0,0
-1,1,1.57
-2,1,0
-2,2,-1.57
-1,1,-0.78
-0,0,0'''
-
-waypoints = parse_waypoints("./waypoint.txt") #TODO: Check if path is correct
+waypoints = parse_waypoints("./waypoint.txt") 
 
 class KeyboardControllerNode(Node):
     def __init__(self):
