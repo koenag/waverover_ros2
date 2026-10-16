@@ -94,7 +94,7 @@ class KeyboardControllerNode(Node):
             initial_turn = wrap_angle(angle_to_next_point - r0)
 
             t_initial = abs(initial_turn) / TURN_SPEED
-            if abs(initial_turn) > 0.02: #TODO: test: change 0.02 to 0.0
+            if abs(initial_turn) > 0.02: 
                 omega = math.copysign(TURN_SPEED, initial_turn)
                 actions.append((
                     0.0, omega,
@@ -117,7 +117,7 @@ class KeyboardControllerNode(Node):
             final_turn = wrap_angle(rf - angle_to_next_point)
 
             t_final  = abs(final_turn) / TURN_SPEED
-            if abs(final_turn) > 0.02: #TODO: test: change 0.02 to 0.0
+            if abs(final_turn) > 0.02:
                 omega = math.copysign(TURN_SPEED, final_turn)
                 actions.append((
                     0.0, omega,
