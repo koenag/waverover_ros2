@@ -112,10 +112,7 @@ class TagLocalizationNode(Node):
         self.camera_frame = str(
             self.get_parameter('camera_frame').value
         )
-        self.tag_frames = list(
-            self.get_parameter('tag_frames').value
-        )
-
+        
         # earlier defined the tag_world_poses
         raw_poses = list(
             self.get_parameter('tag_world_poses').value or []

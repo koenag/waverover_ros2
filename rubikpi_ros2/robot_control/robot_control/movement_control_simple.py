@@ -4,7 +4,8 @@ from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 import math
 import numpy as np
-
+from geometry_msgs.msg import Pose2D
+import time
 # Calibration matrix and its inverse, derived from empirical testing
 CALIBRATION_MATRIX = np.array([
     [0.565034, 0.733764],
@@ -27,26 +28,52 @@ def parse_waypoints(file):
 waypoints = parse_waypoints("./waypoint.txt") 
 
 class KeyboardControllerNode(Node):
+
     def __init__(self):
         super().__init__('keyboard_controller_node')
-        self.publisher = self.create_publisher(Float32MultiArray, 'motor_commands', 10)
+
+        self.publisher = self.create_publisher(
+            Float32MultiArray, 'motor_commands', 10
+        )
+
+        # Subscribe to localization updates
+        self.pose_subscriber = self.create_subscription(
+            Pose2D, '/robot_pose', self.pose_callback, 10
+        )
+
+        # Latest localized robot pose
+        self.robot_x = 0
+        self.robot_y = 0
+        self.robot_theta = 0
+        self.last_pose_time = 0
+
+        # Movement settings
+        self.position_tolerance = 0.10
+        self.heading_tolerance = 0.08
+
+        # Motor commands
         self.current_L = 0.0
         self.current_R = 0.0
-        self.running = True
-
-        self.segment_index = 0
-        self.dt = 0.10
-    
         self.calibration_fault = False
-        self.log_count = 0
 
-        # Simple movement controller state
-        self.actions = self.build_simple_actions() # list of [(linear velocity, angular velocity, time, description)]
+        # Action tracking
+        self.actions = self.build_simple_actions()
         self.action_index = 0
         self.action_t = 0.0
+        self.action_start_pose = None
 
-        self.timer = self.create_timer(self.dt, self.update)
-        self.get_logger().info('Waypoint Controller Node started (SIMPLE MOVEMENT)')
+        # Timer and logging
+        self.dt = 0.10
+        self.log_count = 0
+
+        self.timer = self.create_timer(
+            self.dt, self.control_step_simple
+        )
+
+        self.get_logger().info(
+            'Waypoint Controller Node started (LOCALIZATION CORRECTION)'
+        )
+
 
     def update(self):
         self.control_step_simple()      # Simple movement controller
@@ -128,6 +155,7 @@ class KeyboardControllerNode(Node):
 
         return actions
 
+    
     # Decide current_L, current_R
     def control_step_simple(self):
         if self.calibration_fault or self.action_index >= len(self.actions):
@@ -135,61 +163,76 @@ class KeyboardControllerNode(Node):
             self.current_R = 0.0
             return
 
+        # If localization is stale, rotate slowly to search for an AprilTag.
+        now = time.monotonic()
+        if (
+            self.last_pose_time is None
+            or now - self.last_pose_time > 0.3
+        ):
+            self.get_left_right_speed(0.0, 0.3)
+            return
+
         v, omega, duration, description = self.actions[self.action_index]
 
-        # Get waypoints at beginning of segment (PURELY FOR LOGGING)
-        if self.action_t == 0.0 and description != 'Pause':
-            # Identify the waypoint pair
-            segment_number = int(description.split(':')[0].split()[1])
-
-            start = waypoints[segment_number]
-            end = waypoints[segment_number + 1]
-
-            self.get_logger().info(
-                f'\n===== SEGMENT {segment_number} =====\n'
-                f'FROM waypoint {segment_number}: {start}\n'
-                f'TO waypoint {segment_number + 1}: {end}\n'
-                f'Action: {description}\n'
-                f'Duration: {duration:.3f}s'
+        # Record the localized starting pose for this action.
+        if self.action_start_pose is None:
+            self.action_start_pose = (
+                self.robot_x,
+                self.robot_y,
+                self.robot_theta
             )
 
-            if abs(omega) > 0.001:
-                direction = 'LEFT (CCW)' if omega > 0 else 'RIGHT (CW)'
-                angle_deg = math.degrees(omega * duration)
+        start_x, start_y, start_theta = self.action_start_pose
 
-                self.get_logger().info(
-                    f'ROTATION START: {direction}, '
-                    f'rotating at angle={angle_deg:.1f} degrees, '
-                    f'omega={omega:.3f} rad/s'
-                )
+        # Estimate actual progress from localization.
+        if abs(v) > 1e-6:
+            dx = self.robot_x - start_x
+            dy = self.robot_y - start_y
 
+            # Project displacement onto the original travel direction.
+            distance_traveled = (
+                dx * math.cos(start_theta)
+                + dy * math.sin(start_theta)
+            )
+
+            # Convert measured distance into equivalent action time.
+            self.action_t = max(0.0, distance_traveled / v)
+
+        elif abs(omega) > 1e-6:
+            angle_turned = (
+                (self.robot_theta - start_theta + math.pi)
+                % (2 * math.pi)
+            ) - math.pi
+
+            # Convert measured rotation into equivalent action time.
+            self.action_t = max(0.0, angle_turned / omega)
+
+        # Keep the original motor commands fixed.
         self.get_left_right_speed(v, omega)
 
-        # if current_L, current_R oob
         if self.calibration_fault:
             return
 
         self.log_count += 1
         if self.log_count % 2 == 0:
             self.get_logger().info(
-                f'{description}: t={self.action_t:.2f}, '
+                f'{description}: t={self.action_t:.2f}/{duration:.2f}, '
                 f'L={self.current_L:.4f}, R={self.current_R:.4f}'
             )
 
-        self.action_t += self.dt
-
+        # Finish the action based on localized progress.
         if self.action_t >= duration:
-            self.get_logger().info(
-                f'ACTION COMPLETED: {description}'
-            )
+            self.get_logger().info(f'ACTION COMPLETED: {description}')
 
             self.action_index += 1
             self.action_t = 0.0
+            self.action_start_pose = None
 
             if self.action_index >= len(self.actions):
                 self.current_L = 0.0
                 self.current_R = 0.0
                 self.get_logger().info('ALL WAYPOINTS COMPLETED')
+
 
     # Publish the current left and right motor commands to the 'motor_commands' topic.
     def publish_motor_commands(self):
