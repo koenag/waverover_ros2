@@ -9,7 +9,7 @@ from geometry_msgs.msg import Pose2D
 
 import yaml
 
-with open('apriltag.yaml', 'r') as file:
+with open('config/apriltag_map.yaml', 'r') as file:
     config = yaml.safe_load(file)
     
 
@@ -99,6 +99,7 @@ class TagLocalizationNode(Node):
 
         self.declare_parameter('camera_frame', 'camera')
 
+        # TODO: Add camera extrinsics parameters (base_to_camera_xyz, base_to_camera_rpy) to the config file and load them here.
         # Calibrated camera pose expressed in the robot/base frame.
         #extrinsic matrix
         self.declare_parameter(
@@ -125,15 +126,13 @@ class TagLocalizationNode(Node):
 
         self.tag_world = {}
 
-        for tag in config['tags']:
-            tag_id = tag['tag_id']
-            x = tag['x']
-            y = tag['y']
-            yaw = tag['yaw']
+        for tag_id, tag in config['tags'].items():
+            x, y, z = tag['position']
+            yaw = math.radians(tag['yaw_deg'])
 
             self.tag_world[f'tag_{tag_id}'] = (
-                (x, y, 0.0),
-                yaw_quaternion(yaw),
+                (float(x), float(y), float(z)),
+                rpy_quaternion(0.0, 0.0, yaw),
             )
 
         xyz = list(
@@ -185,6 +184,7 @@ class TagLocalizationNode(Node):
             parent = stamped.header.frame_id.lstrip('/')
             child = stamped.child_frame_id.lstrip('/')
 
+            # TODO: might need to change camera_frame to camera_link or camera_optical_frame depending on the TF tree
             # This implementation expects a direct camera -> tag TF.
             if parent != self.camera_frame:
                 continue
