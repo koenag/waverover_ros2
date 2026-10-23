@@ -87,9 +87,6 @@ class TagLocalizationNode(Node):
     def __init__(self):
         super().__init__('tag_localization')
 
-        # Tag frame names must match the detector's TF child frame IDs.
-        self.declare_parameter('tag_frames', ['tag_0', 'tag_1'])
-
         # Flattened rows: [tag_id, world_x, world_y, world_yaw, ...]
         # All entries are doubles for ROS parameter compatibility.
         # tag coordinates in world
@@ -103,7 +100,7 @@ class TagLocalizationNode(Node):
         # Calibrated camera pose expressed in the robot/base frame.
         #extrinsic matrix
         self.declare_parameter(
-            'base_to_camera_xyz', [0.0, 0.0, 0.0]
+            'base_to_camera_xyz', [0.0, 0.085, -0.1275]
         )
         self.declare_parameter(
             'base_to_camera_rpy', [0.0, 0.0, 0.0]
