@@ -67,7 +67,7 @@ class KeyboardControllerNode(Node):
         self.log_count = 0
 
         self.timer = self.create_timer(
-            self.dt, self.control_step_simple
+            self.dt, self.update
         )
 
         self.get_logger().info(
@@ -79,6 +79,13 @@ class KeyboardControllerNode(Node):
         self.control_step_simple()      # Simple movement controller
         self.publish_motor_commands()
 
+    # reads the coordinates from the localizaiton topic (robot_pose)
+    def pose_callback(self, msg):
+        self.robot_x = msg.x
+        self.robot_y = msg.y
+        self.robot_theta = msg.theta
+        self.last_pose_time = time.monotonic()
+        
     # Compute left and right motor speeds from desired linear/angular velocities using the calibration matrix.
     def get_left_right_speed(self, v, omega):
             desired_velocity = np.array([v, omega], dtype=float)
