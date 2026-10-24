@@ -104,7 +104,7 @@ class TagLocalizationNode(Node):
 
         self.declare_parameter(
             'base_to_camera_rpy',
-            [math.radians(-80), 0.0, math.radians(-90)] # The -80 degree accounts for camera tilt upwards away from robot body (pitch 10 degrees for us)
+            [math.radians(-90), 0.0, math.radians(-90)] # The -80 degree accounts for camera tilt upwards away from robot body (pitch 10 degrees for us)
         )
 
         self.declare_parameter('detections_topic', '/tf')
