@@ -1,39 +1,41 @@
+
 # Known landmark poses in the world frame.
 # Positions are tag centers, in meters.
-# Angles are in degrees.
+# yaw_deg is the direction the printed front face points,
+# measured counterclockwise from world +X.
 
 frame_id: world
 tag_family: tag36h11
 
 tags:
   0:
-    position: [0.295, 1.558, 0.195]
-    yaw_deg: 180
+    position: [0.000, 1.442, 0.195]
+    yaw_deg: 0
 
   2:
-    position: [0.295, 2.605, 0.195]
-    yaw_deg: 180
+    position: [0.000, 0.395, 0.195]
+    yaw_deg: 0
 
   3:
-    position: [0.985, 3.005, 0.360]
-    yaw_deg: 270
+    position: [0.690, 0.035, 0.360]
+    yaw_deg: 90
 
   4:
-    position: [1.570, 3.005, 0.360]
-    yaw_deg: 270
+    position: [1.275, 0.035, 0.360]
+    yaw_deg: 90
 
   5:
-    position: [2.430, 2.900, 0.497]
-    yaw_deg: 0
+    position: [2.135, 0.100, 0.497]
+    yaw_deg: 180
 
   7:
-    position: [2.430, 2.055, 0.480]
-    yaw_deg: 0
+    position: [2.135, 0.945, 0.480]
+    yaw_deg: 180
 
   8:
-    position: [2.820, 0.240, 0.515]
-    yaw_deg: 90
+    position: [2.525, 2.760, 0.515]
+    yaw_deg: 270
 
   9:
-    position: [1.510, 0.240, 0.525]
-    yaw_deg: 90
+    position: [1.215, 2.760, 0.525]
+    yaw_deg: 270
