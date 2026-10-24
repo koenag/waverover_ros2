@@ -193,6 +193,21 @@ class TagLocalizationNode(Node):
                 (t.x, t.y, t.z),
                 (r.x, r.y, r.z, r.w),
             )
+            # Determine the directions of the tag's local axes
+            # expressed in the camera frame.
+            q = camera_to_tag[1]
+
+            tag_x_axis = rotate_vector(q, (1.0, 0.0, 0.0))
+            tag_y_axis = rotate_vector(q, (0.0, 1.0, 0.0))
+            tag_z_axis = rotate_vector(q, (0.0, 0.0, 1.0))
+
+            self.get_logger().info(
+                f"{child} tag axes in camera frame:\n"
+                f"  Tag +X: {tuple(round(v, 3) for v in tag_x_axis)}\n"
+                f"  Tag +Y: {tuple(round(v, 3) for v in tag_y_axis)}\n"
+                f"  Tag +Z: {tuple(round(v, 3) for v in tag_z_axis)}"
+            )
+
             # get world coorindates of tag
             world_to_tag = self.tag_world[child]
 
