@@ -79,7 +79,7 @@ class KeyboardControllerNode(Node):
         self.control_step_simple()      # Simple movement controller
         self.publish_motor_commands()
 
-    # reads the coordinates from the localizaiton topic (robot_pose)
+    # reads the coordinates from the localization topic (robot_pose)
     def pose_callback(self, msg):
         self.robot_x = msg.x
         self.robot_y = msg.y
