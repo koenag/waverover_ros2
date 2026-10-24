@@ -42,8 +42,8 @@ class KeyboardControllerNode(Node):
         )
 
         # Latest localized robot pose
-        self.robot_x = 0
-        self.robot_y = 0
+        self.robot_x = 1
+        self.robot_y = 1.6
         self.robot_theta = 0
         self.last_pose_time = 0
 
@@ -181,7 +181,7 @@ class KeyboardControllerNode(Node):
 
         v, omega, duration, description = self.actions[self.action_index]
 
-        # Record the localized starting pose for this action.
+        # Get the position that robot STARTS at
         if self.action_start_pose is None:
             self.action_start_pose = (
                 self.robot_x,
@@ -191,12 +191,12 @@ class KeyboardControllerNode(Node):
 
         start_x, start_y, start_theta = self.action_start_pose
 
-        # Estimate actual progress from localization.
+        # measure how far the robot has actually gone (based on the true position from /robot_pose)
         if abs(v) > 1e-6:
             dx = self.robot_x - start_x
             dy = self.robot_y - start_y
 
-            # Project displacement onto the original travel direction.
+            # velocity in x and y direction based on how far you've gone 
             distance_traveled = (
                 dx * math.cos(start_theta)
                 + dy * math.sin(start_theta)

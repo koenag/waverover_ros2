@@ -87,7 +87,7 @@ class TagLocalizationNode(Node):
     def __init__(self):
         super().__init__('tag_localization')
 
-        self.declare_parameter('camera_frame', 'camera')
+        self.declare_parameter('camera_frame', 'camera') #tracks which camera the coordinates are coming from, here we are only processing from 1 camera but this is generalizble to if we have multiple cameras
 
         # TODO: Add camera extrinsics parameters (base_to_camera_xyz, base_to_camera_rpy) to the config file and load them here.
         # Calibrated camera pose expressed in the robot/base frame.
@@ -167,8 +167,6 @@ class TagLocalizationNode(Node):
             parent = stamped.header.frame_id.lstrip('/')
             child = stamped.child_frame_id.lstrip('/')
 
-            # TODO: might need to change camera_frame to camera_link or camera_optical_frame depending on the TF tree
-            # This implementation expects a direct camera -> tag TF.
             if parent != self.camera_frame:
                 continue
             if child not in self.tag_world:
