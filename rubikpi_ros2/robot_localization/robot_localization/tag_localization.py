@@ -121,9 +121,14 @@ class TagLocalizationNode(Node):
             x, y, z = tag['position']
             yaw = math.radians(tag['yaw_deg'])
 
+            tag_rotation = quat_multiply(
+                rpy_quaternion(0.0, 0.0, yaw),
+                rpy_quaternion(math.pi / 2, 0.0, 0.0)
+            )
+
             self.tag_world[f'tag36h11:{tag_id}'] = (
                 (float(x), float(y), float(z)),
-                rpy_quaternion(0.0, 0.0, yaw),
+                tag_rotation,
             )
 
         xyz = list(
