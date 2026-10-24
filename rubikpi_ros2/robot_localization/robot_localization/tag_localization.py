@@ -97,14 +97,14 @@ class TagLocalizationNode(Node):
 
         self.declare_parameter('camera_frame', 'camera_frame') #tracks which camera the coordinates are coming from, here we are only processing from 1 camera but this is generalizble to if we have multiple cameras
 
-        # TODO: Add camera extrinsics parameters (base_to_camera_xyz, base_to_camera_rpy) to the config file and load them here.
-        # Calibrated camera pose expressed in the robot/base frame.
-        #extrinsic matrix
+        # Extrinsic camera pose expressed in the robot/base frame.
         self.declare_parameter(
-            'base_to_camera_xyz', [0.0, 0.085, -0.1275]
+            'base_to_camera_xyz', [0.085, 0.0, 0.127]
         )
+
         self.declare_parameter(
-            'base_to_camera_rpy', [0.0, 0.0, 0.0]
+            'base_to_camera_rpy',
+            [math.radians(-80), 0.0, math.radians(-90)] # The -80 degree accounts for camera tilt upwards away from robot body (pitch 10 degrees for us)
         )
 
         self.declare_parameter('detections_topic', '/tf')
@@ -123,7 +123,7 @@ class TagLocalizationNode(Node):
 
             tag_rotation = quat_multiply(
                 rpy_quaternion(0.0, 0.0, yaw),
-                rpy_quaternion(math.pi / 2, 0.0, 0.0)
+                rpy_quaternion(-math.pi / 2, 0.0, 0.0)
             )
 
             self.tag_world[f'tag36h11:{tag_id}'] = (
