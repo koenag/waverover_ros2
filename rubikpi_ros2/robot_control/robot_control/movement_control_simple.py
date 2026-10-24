@@ -42,7 +42,7 @@ class KeyboardControllerNode(Node):
         )
 
         # Latest localized robot pose
-        self.robot_x = 0.295
+        self.robot_x = 0.69
         self.robot_y = 0.4
         self.robot_theta = 0
         self.last_pose_time = 0
