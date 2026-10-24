@@ -123,7 +123,7 @@ class TagLocalizationNode(Node):
 
             tag_rotation = quat_multiply(
                 rpy_quaternion(0.0, 0.0, yaw),
-                rpy_quaternion(-math.pi / 2, 0.0, 0.0)
+                rpy_quaternion(math.pi / 2, 0.0, 0.0)
             )
 
             self.tag_world[f'tag36h11:{tag_id}'] = (
@@ -200,6 +200,19 @@ class TagLocalizationNode(Node):
             # T_world_tag * T_tag_camera * T_camera_base
             # convert camera to robots position in the world
             tag_to_camera = transform_inverse(camera_to_tag)
+
+            world_to_camera = transform_compose(
+                self.tag_world[child],
+                tag_to_camera
+            )
+            camera_pos = world_to_camera[0]
+            self.get_logger().info(
+                f"Camera world position from {child}: "
+                f"x={camera_pos[0]:.3f}, "
+                f"y={camera_pos[1]:.3f}, "
+                f"z={camera_pos[2]:.3f}"
+            )
+
             camera_to_base = transform_inverse(self.base_to_camera)
 
             world_to_base = transform_compose(
