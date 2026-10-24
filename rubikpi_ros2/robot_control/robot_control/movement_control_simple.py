@@ -25,7 +25,7 @@ def parse_waypoints(file):
         data = f.read()
     return [tuple(map(float, line.split(','))) for line in data.strip().splitlines()]
 
-waypoints = parse_waypoints("./waypoint.txt") 
+waypoints = parse_waypoints("./waypoint_2.txt") 
 
 class KeyboardControllerNode(Node):
 
