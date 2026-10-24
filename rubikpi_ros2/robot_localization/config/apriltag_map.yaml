@@ -1,7 +1,7 @@
 
-# Known landmark poses in the world frame.
-# Positions are tag centers, in meters.
-# yaw_deg is the direction the printed front face points,
+# Known AprilTag poses in the world coordinate frame.
+# Positions are measured to the center of each tag, in meters.
+# yaw_deg indicates the direction the printed face points,
 # measured counterclockwise from world +X.
 
 frame_id: world
@@ -17,25 +17,25 @@ tags:
     yaw_deg: 0
 
   3:
-    position: [0.690, 0.035, 0.360]
+    position: [0.690, 0.035, 0.222]
     yaw_deg: 90
 
   4:
-    position: [1.275, 0.035, 0.360]
+    position: [1.275, 0.035, 0.230]
     yaw_deg: 90
 
   5:
-    position: [2.135, 0.100, 0.497]
+    position: [2.135, 0.100, 0.242]
     yaw_deg: 180
 
   7:
-    position: [2.135, 0.945, 0.480]
+    position: [2.135, 0.945, 0.242]
     yaw_deg: 180
 
   8:
-    position: [2.525, 2.760, 0.515]
+    position: [2.525, 2.760, 0.194]
     yaw_deg: 270
 
   9:
-    position: [1.215, 2.760, 0.525]
+    position: [1.715, 2.760, 0.218]
     yaw_deg: 270

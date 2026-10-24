@@ -7,9 +7,17 @@ from rclpy.parameter import Parameter
 from tf2_msgs.msg import TFMessage
 from geometry_msgs.msg import Pose2D
 
+import os
 import yaml
+from ament_index_python.packages import get_package_share_directory
 
-with open('config/apriltag_map.yaml', 'r') as file:
+config_path = os.path.join(
+    get_package_share_directory('robot_localization'),
+    'config',
+    'apriltag_map.yaml'
+)
+
+with open(config_path, 'r') as file:
     config = yaml.safe_load(file)
     
 
@@ -87,7 +95,7 @@ class TagLocalizationNode(Node):
     def __init__(self):
         super().__init__('tag_localization')
 
-        self.declare_parameter('camera_frame', 'camera') #tracks which camera the coordinates are coming from, here we are only processing from 1 camera but this is generalizble to if we have multiple cameras
+        self.declare_parameter('camera_frame', 'camera_frame') #tracks which camera the coordinates are coming from, here we are only processing from 1 camera but this is generalizble to if we have multiple cameras
 
         # TODO: Add camera extrinsics parameters (base_to_camera_xyz, base_to_camera_rpy) to the config file and load them here.
         # Calibrated camera pose expressed in the robot/base frame.
@@ -113,7 +121,7 @@ class TagLocalizationNode(Node):
             x, y, z = tag['position']
             yaw = math.radians(tag['yaw_deg'])
 
-            self.tag_world[f'tag_{tag_id}'] = (
+            self.tag_world[f'tag36h11:{tag_id}'] = (
                 (float(x), float(y), float(z)),
                 rpy_quaternion(0.0, 0.0, yaw),
             )

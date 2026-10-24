@@ -65,6 +65,7 @@ class KeyboardControllerNode(Node):
         # Timer and logging
         self.dt = 0.10
         self.log_count = 0
+        self.running = True
 
         self.timer = self.create_timer(
             self.dt, self.update
@@ -135,7 +136,7 @@ class KeyboardControllerNode(Node):
                     t_initial,
                     f'Segment {i}: Initial turn'
                 ))
-                actions.append((0.0, 0.0, 0.4, 'Pause')) # Temporary pause for movement distinction
+                # actions.append((0.0, 0.0, 0.4, 'Pause')) # Temporary pause for movement distinction
 
             t_drive = distance / DRIVE_SPEED
             # Drive straight 
@@ -158,7 +159,7 @@ class KeyboardControllerNode(Node):
                     t_final,
                     f'Segment {i}: Final turn'
                 ))
-                actions.append((0.0, 0.0, 0.4, 'Pause')) # Temporary pause for movement distinction
+                # actions.append((0.0, 0.0, 0.4, 'Pause')) # Temporary pause for movement distinction
 
         return actions
 
@@ -174,9 +175,14 @@ class KeyboardControllerNode(Node):
         now = time.monotonic()
         if (
             self.last_pose_time is None
-            or now - self.last_pose_time > 0.3
+            or now - self.last_pose_time > 0.5
         ):
             self.get_left_right_speed(0.0, 0.3)
+            return
+
+        if self.last_pose_time == 0 or now - self.last_pose_time > 0.5:
+            self.current_L = 0.0
+            self.current_R = 0.0
             return
 
         v, omega, duration, description = self.actions[self.action_index]
