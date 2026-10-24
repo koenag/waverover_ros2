@@ -42,8 +42,8 @@ class KeyboardControllerNode(Node):
         )
 
         # Latest localized robot pose
-        self.robot_x = 1
-        self.robot_y = 1.6
+        self.robot_x = 0.295
+        self.robot_y = 0.4
         self.robot_theta = 0
         self.last_pose_time = 0
 
@@ -88,19 +88,19 @@ class KeyboardControllerNode(Node):
         
     # Compute left and right motor speeds from desired linear/angular velocities using the calibration matrix.
     def get_left_right_speed(self, v, omega):
-            desired_velocity = np.array([v, omega], dtype=float)
-            L, R = CALIBRATION_INVERSE @ desired_velocity
-            # Error if the computed motor commands are not finite or exceed the maximum allowed command
-            if not np.all(np.isfinite([L, R])) or max(abs(L), abs(R)) > MAX_MOTOR_COMMAND:
-                self.current_L = 0.0
-                self.current_R = 0.0
-                self.calibration_fault = True
-                self.get_logger().error(
-                    f'Unachievable command: v={v:.4f}, omega={omega:.4f}, L={L:.4f}, R={R:.4f}. Stopping.'
-                )
-                return
-            self.current_L = float(L)
-            self.current_R = float(R)
+        desired_velocity = np.array([v, omega], dtype=float)
+        L, R = CALIBRATION_INVERSE @ desired_velocity
+        # Error if the computed motor commands are not finite or exceed the maximum allowed command
+        if not np.all(np.isfinite([L, R])) or max(abs(L), abs(R)) > MAX_MOTOR_COMMAND:
+            self.current_L = 0.0
+            self.current_R = 0.0
+            self.calibration_fault = True
+            self.get_logger().error(
+                f'Unachievable command: v={v:.4f}, omega={omega:.4f}, L={L:.4f}, R={R:.4f}. Stopping.'
+            )
+            return
+        self.current_L = float(L)
+        self.current_R = float(R)
 
     # Turtle graphics get the actions with linear velocity, angular, and time required to execute step 
     def build_simple_actions(self):
@@ -181,7 +181,7 @@ class KeyboardControllerNode(Node):
 
         v, omega, duration, description = self.actions[self.action_index]
 
-        # Get the position that robot STARTS at
+        
         if self.action_start_pose is None:
             self.action_start_pose = (
                 self.robot_x,
@@ -189,6 +189,7 @@ class KeyboardControllerNode(Node):
                 self.robot_theta
             )
 
+        # Get the position that robot STARTS at at the start of the path between coordinate i and i+1
         start_x, start_y, start_theta = self.action_start_pose
 
         # measure how far the robot has actually gone (based on the true position from /robot_pose)
@@ -196,15 +197,17 @@ class KeyboardControllerNode(Node):
             dx = self.robot_x - start_x
             dy = self.robot_y - start_y
 
-            # velocity in x and y direction based on how far you've gone 
+            # velocity in x and y direction based on how far you've gone and the initial orientation of that path from coordinate i and i+1
             distance_traveled = (
                 dx * math.cos(start_theta)
                 + dy * math.sin(start_theta)
             )
 
-            # Convert measured distance into equivalent action time.
+            # update action_t to be the actual time you would have been travelling for given the speed you were going at and the distance you've covered time = distance / speed 
+            # if you've already reached self.action_t would become duration
             self.action_t = max(0.0, distance_traveled / v)
 
+        #same thing with rotation
         elif abs(omega) > 1e-6:
             angle_turned = (
                 (self.robot_theta - start_theta + math.pi)
@@ -214,7 +217,7 @@ class KeyboardControllerNode(Node):
             # Convert measured rotation into equivalent action time.
             self.action_t = max(0.0, angle_turned / omega)
 
-        # Keep the original motor commands fixed.
+        # send the same speeds
         self.get_left_right_speed(v, omega)
 
         if self.calibration_fault:
@@ -227,7 +230,8 @@ class KeyboardControllerNode(Node):
                 f'L={self.current_L:.4f}, R={self.current_R:.4f}'
             )
 
-        # Finish the action based on localized progress.
+        # Now action_t is updated to be longer/shorter than it originaly was bsed on the updated
+        # position of the robot 
         if self.action_t >= duration:
             self.get_logger().info(f'ACTION COMPLETED: {description}')
 
