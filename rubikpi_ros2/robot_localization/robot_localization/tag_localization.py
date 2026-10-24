@@ -7,9 +7,17 @@ from rclpy.parameter import Parameter
 from tf2_msgs.msg import TFMessage
 from geometry_msgs.msg import Pose2D
 
+import os
 import yaml
+from ament_index_python.packages import get_package_share_directory
 
-with open('config/apriltag_map.yaml', 'r') as file:
+config_path = os.path.join(
+    get_package_share_directory('robot_localization'),
+    'config',
+    'apriltag_map.yaml'
+)
+
+with open(config_path, 'r') as file:
     config = yaml.safe_load(file)
     
 
