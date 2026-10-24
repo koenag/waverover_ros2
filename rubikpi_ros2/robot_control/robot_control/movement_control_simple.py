@@ -175,9 +175,14 @@ class KeyboardControllerNode(Node):
         now = time.monotonic()
         if (
             self.last_pose_time is None
-            or now - self.last_pose_time > 0.3
+            or now - self.last_pose_time > 0.5
         ):
             self.get_left_right_speed(0.0, 0.3)
+            return
+
+        if self.last_pose_time == 0 or now - self.last_pose_time > 0.5:
+            self.current_L = 0.0
+            self.current_R = 0.0
             return
 
         v, omega, duration, description = self.actions[self.action_index]
