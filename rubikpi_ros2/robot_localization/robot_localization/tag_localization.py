@@ -87,13 +87,6 @@ class TagLocalizationNode(Node):
     def __init__(self):
         super().__init__('tag_localization')
 
-        # Flattened rows: [tag_id, world_x, world_y, world_yaw, ...]
-        # All entries are doubles for ROS parameter compatibility.
-        # tag coordinates in world
-        self.declare_parameter(
-            'tag_world_poses', Parameter.Type.DOUBLE_ARRAY
-        )
-
         self.declare_parameter('camera_frame', 'camera')
 
         # TODO: Add camera extrinsics parameters (base_to_camera_xyz, base_to_camera_rpy) to the config file and load them here.
@@ -113,10 +106,6 @@ class TagLocalizationNode(Node):
             self.get_parameter('camera_frame').value
         )
         
-        # earlier defined the tag_world_poses
-        raw_poses = list(
-            self.get_parameter('tag_world_poses').value or []
-        )
 
         self.tag_world = {}
 
@@ -253,3 +242,4 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
