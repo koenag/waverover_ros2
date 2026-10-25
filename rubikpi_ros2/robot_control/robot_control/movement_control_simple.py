@@ -177,6 +177,7 @@ class KeyboardControllerNode(Node):
             self.last_pose_time is None
             or now - self.last_pose_time > 0.3
         ):
+            self.get_logger().info("Cannot localize robot. Rotating to search for AprilTag...")
             self.get_left_right_speed(0.0, 0.3)
             return
 
