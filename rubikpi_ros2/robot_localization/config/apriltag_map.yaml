@@ -36,9 +36,9 @@ tags:
     position: [2.525, 2.760, 0.194]
     yaw_deg: 270
 
-  # 9:
-  #   position: [1.715, 2.760, 0.218]
-  #   yaw_deg: 270
   9:
-    position: [0.0, 0.0, 0.218]
-    yaw_deg: 0
+    position: [1.715, 2.760, 0.218]
+    yaw_deg: 270
+  # 9:
+  #   position: [0.0, 0.0, 0.218]
+  #   yaw_deg: 0
