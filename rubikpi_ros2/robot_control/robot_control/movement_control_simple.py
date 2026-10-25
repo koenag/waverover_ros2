@@ -21,7 +21,7 @@ DRIVE_SPEED = 0.30
 TURN_SPEED = 3.0
 
 POSE_TIMEOUT = 1.0
-SEARCH_TURN_SPEED = 0.3
+SEARCH_TURN_SPEED = 3.0
 
 
 def wrap_angle(angle):
