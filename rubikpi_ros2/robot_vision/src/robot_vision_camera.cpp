@@ -236,6 +236,25 @@ void RobotVisionCamera::prepareRemap() {
   cv::Mat newK = getOptimalNewCameraMatrix(K, D, imageSize, 0.0, imageSize, 0);
   cv::initUndistortRectifyMap(K, D, cv::Mat(), newK, imageSize, CV_16SC2, map1, map2);
 
+  // TODO: Potentially remove this! - temporary fix
+  // Publish intrinsics corresponding to the rectified image.
+  for (int i = 0; i < 3; i++) {
+      for (int j = 0; j < 3; j++) {
+          camera_info_msg_.k[i * 3 + j] = newK.at<double>(i, j);
+          camera_info_msg_.p[i * 4 + j] = newK.at<double>(i, j);
+      }
+  }
+
+  // Rectified image has zero distortion.
+  camera_info_msg_.d.assign(D.total(), 0.0);
+
+  // Rectification rotation is identity for this monocular camera.
+  camera_info_msg_.r = {
+      1.0, 0.0, 0.0,
+      0.0, 1.0, 0.0,
+      0.0, 0.0, 1.0
+  };
+
   RCLCPP_INFO(this->get_logger(),
     "Rectify ready. size=%dx%d, D=%dx%d, K=(%g,%g,%g | %g,%g,%g | %g,%g,%g)",
     imageSize.width, imageSize.height, D.rows, D.cols,
