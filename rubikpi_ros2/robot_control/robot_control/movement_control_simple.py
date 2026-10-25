@@ -14,14 +14,17 @@ CALIBRATION_MATRIX = np.array([
 CALIBRATION_INVERSE = np.linalg.inv(CALIBRATION_MATRIX)
 
 MAX_MOTOR_COMMAND = 0.5
-DRIVE_SPEED = 0.3       # m/s
-TURN_SPEED = 3.0        # rad/s
-POSITION_TOLERANCE = 0.07  # m
-HEADING_TOLERANCE = 0.12   # rad
-POSE_TIMEOUT = 1.5      # seconds
+DRIVE_SPEED = 0.12
+TURN_SPEED = 3.0
+MIN_TURN_SPEED = 3.0
+POSITION_TOLERANCE = 0.07
+HEADING_TOLERANCE = 0.12
+POSE_TIMEOUT = 1.5
 SEARCH_TURN_SPEED = 3.0
-SEARCH_ROTATE_TIME = 0.25
-SEARCH_PAUSE_TIME = 1.25
+SEARCH_ROTATE_TIME = 0.10
+SEARCH_PAUSE_TIME = 3.0
+LOG_INTERVAL = 1.0
+CONTROL_PERIOD = 0.05
 
 
 def wrap_angle(angle):
@@ -40,14 +43,29 @@ class WaypointController(Node):
         self.create_subscription(Pose2D, '/robot_pose', self.pose_callback, 10)
 
         self.waypoints = parse_waypoints('./waypoint_2.txt')
-        self.index = 1  # First waypoint is the starting position.
+        self.index = 1
         self.state = 'TURN'
         self.pose = None
         self.last_pose_time = 0.0
-        self.search_start = None
+        self.search_phase = None
+        self.search_phase_start = None
+        self.last_log_time = 0.0
+        self.last_reported_state = None
+        self.motor_L = 0.0
+        self.motor_R = 0.0
+        self.last_v = 0.0
+        self.last_omega = 0.0
 
-        self.create_timer(0.1, self.update)
-        self.get_logger().info('Waypoint controller started')
+        self.create_timer(CONTROL_PERIOD, self.update)
+        self.get_logger().info(
+            f'Started: {len(self.waypoints)} waypoints, '
+            f'drive={DRIVE_SPEED:.2f}m/s, turn={TURN_SPEED:.2f}rad/s, '
+            f'search={SEARCH_TURN_SPEED:.2f}rad/s '
+            f'({SEARCH_ROTATE_TIME:.2f}s rotate/{SEARCH_PAUSE_TIME:.2f}s pause), '
+            f'position_tol={POSITION_TOLERANCE:.2f}m, '
+            f'heading_tol={math.degrees(HEADING_TOLERANCE):.1f}deg, '
+            f'pose_timeout={POSE_TIMEOUT:.1f}s'
+        )
 
     def pose_callback(self, msg):
         self.pose = (msg.x, msg.y, msg.theta)
@@ -55,69 +73,106 @@ class WaypointController(Node):
 
     def send_velocity(self, v, omega):
         L, R = CALIBRATION_INVERSE @ np.array([v, omega])
-        # Preserve turn direction and curvature if a command exceeds the limit.
         scale = max(1.0, abs(L) / MAX_MOTOR_COMMAND, abs(R) / MAX_MOTOR_COMMAND)
+        self.motor_L, self.motor_R = float(L / scale), float(R / scale)
+        self.last_v, self.last_omega = v / scale, omega / scale
         msg = Float32MultiArray()
-        msg.data = [float(L / scale), float(R / scale)]
+        msg.data = [self.motor_L, self.motor_R]
         self.publisher.publish(msg)
+
+    def turn_command(self, error):
+        magnitude = min(TURN_SPEED, max(MIN_TURN_SPEED, 1.5 * abs(error)))
+        return math.copysign(magnitude, error)
+
+    def report(self, now, mode, distance=None, heading_error=None, final_error=None):
+        if mode != self.last_reported_state or now - self.last_log_time >= LOG_INTERVAL:
+            age = now - self.last_pose_time if self.pose is not None else float('inf')
+            pose_text = ('none' if self.pose is None else
+                         f'({self.pose[0]:.3f}, {self.pose[1]:.3f}, '
+                         f'{math.degrees(self.pose[2]):.1f}deg)')
+            goal_text = ('done' if self.index >= len(self.waypoints) else
+                         f'{self.waypoints[self.index]}')
+            errors = '' if distance is None else (
+                f' dist={distance:.3f}m heading_err={math.degrees(heading_error):+.1f}deg'
+                f' final_err={math.degrees(final_error):+.1f}deg')
+            self.get_logger().info(
+                f'waypoint={self.index}/{len(self.waypoints)-1} state={mode} '
+                f'goal={goal_text} pose={pose_text} age={age:.2f}s{errors} '
+                f'cmd(v={self.last_v:.2f}, omega={self.last_omega:.2f}) '
+                f'L={self.motor_L:+.3f} R={self.motor_R:+.3f}'
+            )
+            self.last_reported_state = mode
+            self.last_log_time = now
 
     def update(self):
         now = time.monotonic()
-
         if self.index >= len(self.waypoints):
             self.send_velocity(0.0, 0.0)
+            self.report(now, 'DONE')
             return
 
-        # No recent AprilTag pose: rotate, then pause to allow detection.
         if self.pose is None or now - self.last_pose_time > POSE_TIMEOUT:
-            if self.search_start is None:
-                self.search_start = now
-            cycle = SEARCH_ROTATE_TIME + SEARCH_PAUSE_TIME
-            if (now - self.search_start) % cycle < SEARCH_ROTATE_TIME:
+            if self.search_phase is None:
+                self.search_phase = 'ROTATE'
+                self.search_phase_start = now
+                self.get_logger().warning('Localization unavailable; entering SEARCH')
+
+            elapsed = now - self.search_phase_start
+            if self.search_phase == 'ROTATE' and elapsed >= SEARCH_ROTATE_TIME:
+                self.search_phase = 'PAUSE'
+                self.search_phase_start = now
+            elif self.search_phase == 'PAUSE' and elapsed >= SEARCH_PAUSE_TIME:
+                self.search_phase = 'ROTATE'
+                self.search_phase_start = now
+
+            if self.search_phase == 'ROTATE':
                 self.send_velocity(0.0, SEARCH_TURN_SPEED)
+                mode = 'SEARCH_ROTATE'
             else:
                 self.send_velocity(0.0, 0.0)
+                mode = 'SEARCH_PAUSE'
+            self.report(now, mode)
             return
 
-        self.search_start = None
+        if self.search_phase is not None:
+            self.get_logger().info('Localization reacquired; recomputing heading to waypoint')
+        self.search_phase = None
+        self.search_phase_start = None
+
         x, y, theta = self.pose
         goal_x, goal_y, goal_theta = self.waypoints[self.index]
         dx, dy = goal_x - x, goal_y - y
-        distance_to_goal = math.hypot(dx, dy)
-        heading_to_goal = math.atan2(dy, dx)
-        heading_error = wrap_angle(heading_to_goal - theta) # turning to get to next waypoint
-        final_error = wrap_angle(goal_theta - theta) # turning to get to final orientation at waypoint
+        distance = math.hypot(dx, dy)
+        heading_error = wrap_angle(math.atan2(dy, dx) - theta)
+        final_error = wrap_angle(goal_theta - theta)
+
+        if distance <= POSITION_TOLERANCE:
+            self.state = 'FINAL_TURN'
+        elif self.state == 'FINAL_TURN':
+            self.state = 'TURN'
 
         if self.state == 'TURN':
-            if distance_to_goal <= POSITION_TOLERANCE:
-                self.state = 'FINAL_TURN'
-            elif abs(heading_error) > HEADING_TOLERANCE:
-                self.send_velocity(0.0, math.copysign(TURN_SPEED, heading_error))
-                return
+            if abs(heading_error) > HEADING_TOLERANCE:
+                self.send_velocity(0.0, self.turn_command(heading_error))
             else:
                 self.state = 'DRIVE'
-
-        if self.state == 'DRIVE':
-            if distance_to_goal <= POSITION_TOLERANCE:
-                self.state = 'FINAL_TURN'
-            elif abs(heading_error) > HEADING_TOLERANCE:
+                self.send_velocity(0.0, 0.0)
+        elif self.state == 'DRIVE':
+            if abs(heading_error) > HEADING_TOLERANCE:
                 self.state = 'TURN'
                 self.send_velocity(0.0, 0.0)
-                return
             else:
                 self.send_velocity(DRIVE_SPEED, 0.0)
-                return
-
-        if self.state == 'FINAL_TURN':
+        elif self.state == 'FINAL_TURN':
             if abs(final_error) > HEADING_TOLERANCE:
-                self.send_velocity(0.0, math.copysign(TURN_SPEED, final_error))
-                return
+                self.send_velocity(0.0, self.turn_command(final_error))
+            else:
+                self.send_velocity(0.0, 0.0)
+                self.get_logger().info(f'WAYPOINT {self.index} REACHED')
+                self.index += 1
+                self.state = 'TURN'
 
-            self.get_logger().info(f'Reached waypoint {self.index}')
-            self.index += 1
-            self.state = 'TURN'
-            self.send_velocity(0.0, 0.0)
-            return
+        self.report(now, self.state, distance, heading_error, final_error)
 
     def destroy_node(self):
         self.send_velocity(0.0, 0.0)
