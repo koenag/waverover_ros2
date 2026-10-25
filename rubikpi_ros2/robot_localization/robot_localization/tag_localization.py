@@ -97,6 +97,7 @@ class TagLocalizationNode(Node):
 
         self.declare_parameter('camera_frame', 'camera_frame') #tracks which camera the coordinates are coming from, here we are only processing from 1 camera but this is generalizble to if we have multiple cameras
 
+        # TODO: fix camera tilt calculation
         # Extrinsic camera pose expressed in the robot/base frame.
         self.declare_parameter(
             'base_to_camera_xyz', [0.085, 0.0, 0.127]
