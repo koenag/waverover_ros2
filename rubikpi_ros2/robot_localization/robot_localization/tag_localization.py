@@ -286,6 +286,18 @@ class TagLocalizationNode(Node):
                 camera_to_base,
             )
 
+            # [TAG POSE] Robot position estimated independently from this AprilTag.
+            robot_x, robot_y, robot_z = world_to_base[0]
+            robot_yaw = math.degrees(quaternion_yaw(world_to_base[1]))
+
+            self.get_logger().info(
+                f'[TAG POSE] {child} | '
+                f'X={robot_x:.3f}m, '
+                f'Y={robot_y:.3f}m, '
+                f'Z={robot_z:.3f}m, '
+                f'Yaw={robot_yaw:+.1f}deg'
+            )
+
             observations.append(world_to_base)
 
         if not observations:
