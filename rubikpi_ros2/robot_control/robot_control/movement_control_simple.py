@@ -232,10 +232,7 @@ class WaypointController(Node):
 
             else:
                 # Slow down when approaching the waypoint.
-                speed = min(
-                    DRIVE_SPEED,
-                    max(0.08, 0.8 * distance_remaining)
-                )
+                speed = DRIVE_SPEED
 
                 # LOG: Robot aligned sufficiently to drive
                 self.get_logger().info(
