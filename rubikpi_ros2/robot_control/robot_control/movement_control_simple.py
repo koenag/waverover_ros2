@@ -19,7 +19,7 @@ MAX_MOTOR_COMMAND = 0.5
 DRIVE_SPEED = 0.3
 TURN_SPEED = 3.0
 POSITION_TOLERANCE = 0.10
-HEADING_TOLERANCE = 0.50
+HEADING_TOLERANCE = 0.2
 POSE_TIMEOUT = 3.0
 
 SEARCH_TURN_SPEED = 3.0
@@ -179,7 +179,8 @@ class WaypointController(Node):
             self.search_phase_start = now
 
         if self.search_phase == 'ROTATE':
-            self.send_velocity(0.0, SEARCH_TURN_SPEED)
+            # self.send_velocity(0.0, SEARCH_TURN_SPEED)
+            self.send_velocity(0.0, 0.0) # Temporary change!!
             mode = 'SEARCH_ROTATE'
         else:
             self.send_velocity(0.0, 0.0)
