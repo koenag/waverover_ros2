@@ -15,12 +15,13 @@ CALIBRATION_INVERSE = np.linalg.inv(CALIBRATION_MATRIX)
 
 MAX_MOTOR_COMMAND = 0.5
 DRIVE_SPEED = 0.12
-TURN_SPEED = 3.0
+TURN_SPEED = 2.0
 MIN_TURN_SPEED = 3.0
 POSITION_TOLERANCE = 0.07
 HEADING_TOLERANCE = 0.12
 POSE_TIMEOUT = 1.5
 SEARCH_TURN_SPEED = 3.0
+SEARCH_INITIAL_PAUSE_TIME = 2.0  # seconds
 SEARCH_ROTATE_TIME = 0.10
 SEARCH_PAUSE_TIME = 3.0
 LOG_INTERVAL = 1.0
@@ -113,14 +114,20 @@ class WaypointController(Node):
 
         if self.pose is None or now - self.last_pose_time > POSE_TIMEOUT:
             if self.search_phase is None:
-                self.search_phase = 'ROTATE'
+                self.search_phase = 'INITIAL_PAUSE'
                 self.search_phase_start = now
                 self.get_logger().warning('Localization unavailable; entering SEARCH')
 
             elapsed = now - self.search_phase_start
-            if self.search_phase == 'ROTATE' and elapsed >= SEARCH_ROTATE_TIME:
+
+            if self.search_phase == 'INITIAL_PAUSE' and elapsed >= SEARCH_INITIAL_PAUSE_TIME:
+                self.search_phase = 'ROTATE'
+                self.search_phase_start = now
+
+            elif self.search_phase == 'ROTATE' and elapsed >= SEARCH_ROTATE_TIME:
                 self.search_phase = 'PAUSE'
                 self.search_phase_start = now
+
             elif self.search_phase == 'PAUSE' and elapsed >= SEARCH_PAUSE_TIME:
                 self.search_phase = 'ROTATE'
                 self.search_phase_start = now
@@ -130,7 +137,8 @@ class WaypointController(Node):
                 mode = 'SEARCH_ROTATE'
             else:
                 self.send_velocity(0.0, 0.0)
-                mode = 'SEARCH_PAUSE'
+                mode = 'SEARCH_INITIAL_PAUSE' if self.search_phase == 'INITIAL_PAUSE' else 'SEARCH_PAUSE'
+
             self.report(now, mode)
             return
 
