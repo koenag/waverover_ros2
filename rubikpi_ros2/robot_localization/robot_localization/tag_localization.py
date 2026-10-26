@@ -1,4 +1,5 @@
 import math
+import numpy as np
 
 import rclpy
 from rclpy.node import Node
@@ -97,15 +98,14 @@ class TagLocalizationNode(Node):
 
         self.declare_parameter('camera_frame', 'camera_frame') #tracks which camera the coordinates are coming from, here we are only processing from 1 camera but this is generalizble to if we have multiple cameras
 
-        # TODO: fix camera tilt calculation
         # Extrinsic camera pose expressed in the robot/base frame.
         self.declare_parameter(
-            'base_to_camera_xyz', [0.085, 0.0, 0.127]
+            'base_to_camera_xyz', [0.095, 0.0, 0.127]
         )
 
         self.declare_parameter(
             'base_to_camera_rpy',
-            [math.radians(-90), 0.0, math.radians(-90)] # The -80 degree accounts for camera tilt upwards away from robot body (pitch 10 degrees for us)
+            [math.radians(-80), 0.0, math.radians(-90)] # The -80 degree accounts for camera tilt upwards away from robot body (pitch 10 degrees for us)
         )
 
         self.declare_parameter('detections_topic', '/tf')
@@ -173,6 +173,56 @@ class TagLocalizationNode(Node):
                 'No tag world coordinates configured. '
                 'No robot pose will be published until they are set.'
             )
+
+    def fuse_apriltag_observations(self, observations):
+        if not observations:
+            return None
+
+        # Extract robot pose estimates from individual AprilTags.
+        xs = np.array([pose[0][0] for pose in observations])
+        ys = np.array([pose[0][1] for pose in observations])
+        yaws = np.array([
+            quaternion_yaw(pose[1]) for pose in observations
+        ])
+
+        # Step 1: Find the median position.
+        median_x = np.median(xs)
+        median_y = np.median(ys)
+
+        # Step 2: Measure disagreement with the median.
+        distances = np.hypot(
+            xs - median_x,
+            ys - median_y
+        )
+
+        # Step 3: Reject large positional outliers.
+        MAX_DEVIATION = 0.20  # meters
+        valid = distances <= MAX_DEVIATION
+
+        if not np.any(valid):
+            return None
+
+        xs = xs[valid]
+        ys = ys[valid]
+        yaws = yaws[valid]
+        distances = distances[valid]
+
+        # Step 4: Weight observations by consistency.
+        # More consistent observations receive higher weights.
+        weights = 1.0 / (0.05 + distances)
+        weights /= np.sum(weights)
+
+        # Step 5: Fuse position.
+        x = float(np.sum(weights * xs))
+        y = float(np.sum(weights * ys))
+
+        # Step 6: Fuse orientation using circular averaging.
+        yaw = math.atan2(
+            np.sum(weights * np.sin(yaws)),
+            np.sum(weights * np.cos(yaws))
+        )
+
+        return x, y, yaw
 
     def tf_callback(self, msg):
         observations = []
@@ -243,16 +293,7 @@ class TagLocalizationNode(Node):
             return
 
         # averaging positions established by each april tag seen 
-        xs = [pose[0][0] for pose in observations]
-        ys = [pose[0][1] for pose in observations]
-        yaws = [quaternion_yaw(pose[1]) for pose in observations]
-
-        x = sum(xs) / len(xs)
-        y = sum(ys) / len(ys)
-        yaw = math.atan2(
-            sum(math.sin(a) for a in yaws),
-            sum(math.cos(a) for a in yaws),
-        )
+        x, y, yaw = self.fuse_apriltag_observations(observations)
 
         out = Pose2D()
         out.x = x
