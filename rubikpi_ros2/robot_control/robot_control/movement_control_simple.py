@@ -8,12 +8,11 @@ from geometry_msgs.msg import Pose2D
 from std_msgs.msg import Float32MultiArray
 
 
-CALIBRATION_MATRIX = np.array([
+# Motion settings
+CALIBRATION = np.array([
     [0.565034, 0.733764],
     [-4.08242, 3.82298]
 ])
-CALIBRATION_INVERSE = np.linalg.inv(CALIBRATION_MATRIX)
-
 MAX_MOTOR_COMMAND = 0.5
 DRIVE_SPEED = 0.2
 TURN_SPEED = 3.0
@@ -21,12 +20,11 @@ POSITION_TOLERANCE = 0.10
 HEADING_TOLERANCE = 0.2
 POSE_TIMEOUT = 3.0
 
-SEARCH_TURN_SPEED = 3.0
-SEARCH_INITIAL_PAUSE_TIME = 2.0
-SEARCH_ROTATE_TIME = 0.10
-SEARCH_PAUSE_TIME = 3.0
+# Localization search settings
+SEARCH_INITIAL_PAUSE = 2.0
+SEARCH_ROTATION_TIME = 0.10
+SEARCH_PAUSE = 3.0
 
-LOG_INTERVAL = 1.0
 CONTROL_PERIOD = 0.05
 
 
@@ -34,320 +32,156 @@ def wrap_angle(angle):
     return (angle + math.pi) % (2 * math.pi) - math.pi
 
 
-def parse_waypoints(filename):
-    with open(filename) as file:
-        return [
-            tuple(map(float, line.split(',')))
-            for line in file
-            if line.strip()
-        ]
-
-
 class WaypointController(Node):
     def __init__(self):
         super().__init__('waypoint_controller_node')
 
         self.publisher = self.create_publisher(
-            Float32MultiArray, 'motor_commands', 10
-        )
+            Float32MultiArray, 'motor_commands', 10)
         self.create_subscription(
-            Pose2D, '/robot_pose', self.pose_callback, 10
-        )
+            Pose2D, '/robot_pose', self.update_pose, 10)
 
-        self.waypoints = parse_waypoints('./waypoint_2.txt')
-        self.index = 1
-        self.state = 'WAIT_FOR_POSE'
+        with open('./waypoint_2.txt') as file:
+            self.waypoints = [
+                tuple(map(float, line.split(',')))
+                for line in file if line.strip()
+            ]
 
+        self.waypoint_index = 1  # Waypoint 0 is the starting position
         self.pose = None
-        self.last_pose_time = 0.0
+        self.pose_time = 0.0
         self.used_pose_time = 0.0
 
-        # Active timed movement. Incoming poses cannot interrupt it.
-        self.move_end = None
-        self.move_v = 0.0
-        self.move_omega = 0.0
-        self.movement_active = False
+        # (linear speed, angular speed, end time, movement name)
+        self.movement = None
 
-        self.search_phase = None
-        self.search_phase_start = None
-
-        self.last_log_time = 0.0
-        self.last_reported_state = None
-
-        self.motor_L = 0.0
-        self.motor_R = 0.0
-        self.last_v = 0.0
-        self.last_omega = 0.0
+        # (search phase, phase start time)
+        self.search = None
 
         self.create_timer(CONTROL_PERIOD, self.update)
-
         self.get_logger().info(
-            f'Started: {len(self.waypoints)} waypoints, '
-            f'drive={DRIVE_SPEED:.2f}m/s, '
-            f'turn={TURN_SPEED:.2f}rad/s, '
-            f'search={SEARCH_TURN_SPEED:.2f}rad/s, '
-            f'position_tol={POSITION_TOLERANCE:.2f}m, '
-            f'heading_tol={math.degrees(HEADING_TOLERANCE):.1f}deg'
-        )
+            f'Controller started with {len(self.waypoints)} waypoints')
 
-    def pose_callback(self, msg):
-        # Always store poses, but never interrupt an active movement.
-        self.pose = (msg.x, msg.y, msg.theta)
-        self.last_pose_time = time.monotonic()
+    def update_pose(self, message):
+        self.pose = (message.x, message.y, message.theta)
+        self.pose_time = time.monotonic()
 
-    def send_velocity(self, v, omega):
-        L, R = CALIBRATION_INVERSE @ np.array([v, omega])
+    def command(self, linear_speed, angular_speed):
+        left, right = np.linalg.solve(
+            CALIBRATION, [linear_speed, angular_speed])
 
         scale = max(
             1.0,
-            abs(L) / MAX_MOTOR_COMMAND,
-            abs(R) / MAX_MOTOR_COMMAND
+            abs(left) / MAX_MOTOR_COMMAND,
+            abs(right) / MAX_MOTOR_COMMAND
         )
 
-        self.motor_L = float(L / scale)
-        self.motor_R = float(R / scale)
-        self.last_v = v / scale
-        self.last_omega = omega / scale
+        self.publisher.publish(Float32MultiArray(
+            data=[float(left / scale), float(right / scale)]))
 
-        msg = Float32MultiArray()
-        msg.data = [self.motor_L, self.motor_R]
-        self.publisher.publish(msg)
+        return linear_speed / scale, angular_speed / scale
 
-    def start_move(self, v, omega, amount, now):
-        """Start a timed movement that cannot be interrupted by new poses."""
-        self.send_velocity(v, omega)
+    def start_move(self, linear_speed, angular_speed, amount, now, name):
+        actual_linear, actual_angular = self.command(
+            linear_speed, angular_speed)
 
-        # Account for motor-command scaling when estimating duration.
-        speed = abs(self.last_v if abs(v) > 1e-9
-                    else self.last_omega)
-        duration = amount / max(speed, 1e-6)
+        actual_speed = abs(
+            actual_linear if linear_speed != 0 else actual_angular)
 
-        self.move_v = v
-        self.move_omega = omega
-        self.move_end = now + duration
-        self.movement_active = True
+        duration = amount / max(actual_speed, 1e-6)
+        self.movement = (
+            linear_speed, angular_speed, now + duration, name)
 
         self.get_logger().info(
-            f'START {self.state}: amount={amount:.3f}, '
-            f'duration={duration:.2f}s, '
-            f'cmd(v={self.last_v:.3f}, '
-            f'omega={self.last_omega:.3f})'
-        )
-
-    def stop_move(self):
-        self.move_end = None
-        self.movement_active = False
-        self.send_velocity(0.0, 0.0)
-
-    def report(self, now, mode, distance=None,
-               heading_error=None, final_error=None):
-
-        if (mode != self.last_reported_state or
-                now - self.last_log_time >= LOG_INTERVAL):
-
-            age = (
-                now - self.last_pose_time
-                if self.pose is not None
-                else float('inf')
-            )
-
-            pose_text = (
-                'none' if self.pose is None else
-                f'({self.pose[0]:.3f}, {self.pose[1]:.3f}, '
-                f'{math.degrees(self.pose[2]):.1f}deg)'
-            )
-
-            goal_text = (
-                'done' if self.index >= len(self.waypoints)
-                else f'{self.waypoints[self.index]}'
-            )
-
-            errors = ''
-            if distance is not None:
-                errors = (
-                    f' dist={distance:.3f}m '
-                    f'heading_err={math.degrees(heading_error):+.1f}deg'
-                    f' final_err={math.degrees(final_error):+.1f}deg'
-                )
-
-            self.get_logger().info(
-                f'waypoint={self.index}/{len(self.waypoints)-1} '
-                f'state={mode} goal={goal_text} '
-                f'pose={pose_text} age={age:.2f}s{errors} '
-                f'cmd(v={self.last_v:.2f}, '
-                f'omega={self.last_omega:.2f}) '
-                f'L={self.motor_L:+.3f} R={self.motor_R:+.3f}'
-            )
-
-            self.last_reported_state = mode
-            self.last_log_time = now
-
-    def update_search(self, now):
-        if self.search_phase is None:
-            self.search_phase = 'INITIAL_PAUSE'
-            self.search_phase_start = now
-            self.get_logger().warning(
-                'Localization unavailable; entering SEARCH'
-            )
-
-        elapsed = now - self.search_phase_start
-
-        if (self.search_phase == 'INITIAL_PAUSE' and
-                elapsed >= SEARCH_INITIAL_PAUSE_TIME):
-            self.search_phase = 'ROTATE'
-            self.search_phase_start = now
-            self.get_logger().info('SEARCH: starting rotation')
-
-        elif (self.search_phase == 'ROTATE' and
-              elapsed >= SEARCH_ROTATE_TIME):
-            self.search_phase = 'PAUSE'
-            self.search_phase_start = now
-            self.get_logger().info('SEARCH: pausing rotation')
-
-        elif (self.search_phase == 'PAUSE' and
-              elapsed >= SEARCH_PAUSE_TIME):
-            self.search_phase = 'ROTATE'
-            self.search_phase_start = now
-            self.get_logger().info('SEARCH: resuming rotation')
-
-        if self.search_phase == 'ROTATE':
-            self.send_velocity(0.0, SEARCH_TURN_SPEED)
-            mode = 'SEARCH_ROTATE'
-        else:
-            self.send_velocity(0.0, 0.0)
-            mode = (
-                'SEARCH_INITIAL_PAUSE'
-                if self.search_phase == 'INITIAL_PAUSE'
-                else 'SEARCH_PAUSE'
-            )
-
-        self.report(now, mode)
+            f'{name}: amount={amount:.2f}, duration={duration:.2f}s')
 
     def update(self):
         now = time.monotonic()
 
-        # ---------------------------------------------------------
-        # 1. PRIORITY: Finish the active movement first.
-        #    Ignore all new poses for planning until it has ended.
-        # ---------------------------------------------------------
-        if self.movement_active:
-            if now < self.move_end:
-                self.send_velocity(self.move_v, self.move_omega)
-                self.report(now, self.state)
+        # Finish the current movement before using another pose.
+        if self.movement:
+            linear_speed, angular_speed, end_time, name = self.movement
+
+            if now < end_time:
+                self.command(linear_speed, angular_speed)
                 return
 
-            # The movement's planned duration has elapsed.
-            completed_state = self.state
-            self.stop_move()
-            self.state = 'WAIT_FOR_POSE'
-
-            self.get_logger().info(
-                f'FINISHED {completed_state}; motors stopped. '
-                'Waiting for a fresh pose before replanning.'
-            )
-
-            # Discard pose updates received DURING the movement.
-            # A new pose must arrive after this point.
-            self.used_pose_time = self.last_pose_time
-            self.search_phase = None
-            self.search_phase_start = None
+            self.command(0.0, 0.0)
+            self.movement = None
+            self.used_pose_time = self.pose_time
+            self.search = None
+            self.get_logger().info(f'Finished {name}; waiting for a new pose')
             return
 
-        # ---------------------------------------------------------
-        # 2. All waypoints completed.
-        # ---------------------------------------------------------
-        if self.index >= len(self.waypoints):
-            self.stop_move()
-            self.report(now, 'DONE')
+        # All waypoints completed.
+        if self.waypoint_index >= len(self.waypoints):
+            self.command(0.0, 0.0)
             return
 
-        # ---------------------------------------------------------
-        # 3. Process a pose only when no movement is active.
-        # ---------------------------------------------------------
-        new_pose = (
-            self.pose is not None
-            and self.last_pose_time > self.used_pose_time
-        )
+        # Only plan using a pose received after the previous movement ended.
+        #if its a fresh pose (position ) and youve finished the segment
+        if self.pose is not None and self.pose_time > self.used_pose_time:
+            self.used_pose_time = self.pose_time
+            self.search = None
 
-        if new_pose:
-            self.used_pose_time = self.last_pose_time
-
-            if self.search_phase is not None:
-                self.get_logger().info(
-                    'Localization reacquired; replanning'
-                )
-                self.search_phase = None
-                self.search_phase_start = None
-
-            x, y, theta = self.pose
-            goal_x, goal_y, goal_theta = self.waypoints[self.index]
+            x, y, heading = self.pose
+            goal_x, goal_y, goal_heading = self.waypoints[self.waypoint_index]
 
             dx = goal_x - x
             dy = goal_y - y
-            distance = math.hypot(dx, dy)
+            distance_remaining = math.hypot(dx, dy)
 
-            heading_error = wrap_angle(
-                math.atan2(dy, dx) - theta
-            )
-            final_error = wrap_angle(goal_theta - theta)
+            heading_error = wrap_angle(math.atan2(dy, dx) - heading)
+            final_heading_error = wrap_angle(goal_heading - heading)
 
-            # At the waypoint: perform the final heading correction.
-            if distance <= POSITION_TOLERANCE:
-                if abs(final_error) <= HEADING_TOLERANCE:
+            if distance_remaining <= POSITION_TOLERANCE:
+                if abs(final_heading_error) <= HEADING_TOLERANCE:
                     self.get_logger().info(
-                        f'WAYPOINT {self.index} REACHED'
-                    )
-                    self.index += 1
-                    self.state = 'WAIT_FOR_POSE'
-                    self.report(now, 'WAYPOINT_REACHED')
-                    return
-
-                self.state = 'FINAL_TURN'
-                self.start_move(
-                    0.0,
-                    math.copysign(TURN_SPEED, final_error),
-                    abs(final_error),
-                    now
-                )
-
-            # Not facing the target: turn first.
+                        f'Reached waypoint {self.waypoint_index}: '
+                        f'{self.waypoints[self.waypoint_index]}')
+                    self.waypoint_index += 1
+                else:
+                    # if you haven't finished the final turn, continue turning along that error till you finish
+                    self.start_move(
+                        0.0,
+                        math.copysign(TURN_SPEED, final_heading_error), 
+                        abs(final_heading_error), now, 'FINAL TURN')
+            # if you haven't reached the target yet and you're not facing the correct direction turn to face the correct direction
             elif abs(heading_error) > HEADING_TOLERANCE:
-                self.state = 'TURN'
                 self.start_move(
                     0.0,
                     math.copysign(TURN_SPEED, heading_error),
-                    abs(heading_error),
-                    now
-                )
-
-            # Facing the target: drive toward it.
+                    abs(heading_error), now, 'TURN')
+            # if you're facing the right way but not in the right position just go straight
             else:
-                self.state = 'DRIVE'
+                # Slow down when approaching the waypoint.
+                speed = min(DRIVE_SPEED, max(0.08, 0.8 * distance_remaining))
                 self.start_move(
-                    DRIVE_SPEED, 0.0, distance, now
-                )
+                    speed, 0.0, distance_remaining, now, 'DRIVE')
 
-            self.report(
-                now, self.state, distance,
-                heading_error, final_error
-            )
             return
 
-        # ---------------------------------------------------------
-        # 4. No active movement and no fresh pose.
-        #    Wait for localization or start the search routine.
-        # ---------------------------------------------------------
-        self.send_velocity(0.0, 0.0)
+        # no new pose, don't move for a split second so you can decide how to search
+        self.command(0.0, 0.0)
 
-        if (self.pose is None or
-                now - self.last_pose_time > POSE_TIMEOUT):
-            self.update_search(now)
-        else:
-            self.report(now, 'WAIT_FOR_POSE')
+        # if you can't see an april right now and haven't seen one in POSE_TIMEOUT seconds
+        if self.pose is None or now - self.pose_time > POSE_TIMEOUT:
+            if self.search is None:
+                self.search = ('INITIAL_PAUSE', now)
+                self.get_logger().warning('Localization lost; searching')
 
-    def destroy_node(self):
-        self.stop_move()
-        return super().destroy_node()
+            phase, start_time = self.search
+            elapsed = now - start_time
+
+            if phase == 'INITIAL_PAUSE' and elapsed >= SEARCH_INITIAL_PAUSE:
+                self.search = ('ROTATE', now)
+            elif phase == 'ROTATE' and elapsed >= SEARCH_ROTATION_TIME:
+                self.search = ('PAUSE', now)
+            elif phase == 'PAUSE' and elapsed >= SEARCH_PAUSE:
+                self.search = ('ROTATE', now)
+
+            if self.search[0] == 'ROTATE':
+                self.command(0.0, TURN_SPEED)
 
 
 def main(args=None):
@@ -359,6 +193,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.command(0.0, 0.0)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
@@ -366,4 +201,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-
