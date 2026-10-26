@@ -71,6 +71,7 @@ def transform_inverse(transform):
     return inverse_translation, inverse_rotation
 
 
+
 def rpy_quaternion(roll, pitch, yaw):
     cr, sr = math.cos(roll / 2), math.sin(roll / 2)
     cp, sp = math.cos(pitch / 2), math.sin(pitch / 2)
@@ -79,9 +80,10 @@ def rpy_quaternion(roll, pitch, yaw):
     return (
         sr*cp*cy - cr*sp*sy,
         cr*sp*cy + sr*cp*sy,
-        cr*cp*cy + sr*sp*sy,
+        cr*cp*sy - sr*sp*cy,
         cr*cp*cy - sr*sp*sy,
     )
+
 
 
 def quaternion_yaw(q):
