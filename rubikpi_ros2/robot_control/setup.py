@@ -28,6 +28,7 @@ setup(
         'console_scripts': [
             'motor_control = robot_control.motor_control:main',
             'movement_control_simple = robot_control.movement_control_simple:main',
+            'movement_control_simple_rishika = robot_control.movement_control_simple_rishika:main',
             'velocity_control = robot_control.velocity_control:main',
         ],
     },
