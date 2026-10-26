@@ -20,6 +20,8 @@ TURN_SPEED = 3.0
 POSITION_TOLERANCE = 0.10
 HEADING_TOLERANCE = 0.2
 
+MAX_DRIVE_SEGMENT = 0.20
+
 # Localization search settings
 SEARCH_INITIAL_PAUSE = 2.0
 SEARCH_ROTATION_TIME = 0.10
@@ -243,7 +245,11 @@ class WaypointController(Node):
                 )
 
                 self.start_move(
-                    speed, 0.0, distance_remaining, now, 'DRIVE'
+                    speed,
+                    0.0,
+                    min(distance_remaining, MAX_DRIVE_SEGMENT),
+                    now,
+                    'DRIVE'
                 )
 
             return
