@@ -162,16 +162,11 @@ class WaypointController(Node):
                 
                 self.command(linear_speed, angular_speed)
                 return
-            expected_linear_distance_travelled = linear_speed * (duration - self.start_time)
-            expected_angular_distance_travelled = angular_rotation * ROBOT_RADIUS * math.pi/ 180
+            expected_linear_distance_travelled = linear_speed * duration
+            expected_angular_distance_travelled = angular_rotation * ROBOT_RADIUS * 180/ math.pi
             self.total_distance_travelled += expected_linear_distance_travelled 
             self.total_distance_travelled  += expected_angular_distance_travelled
             
-            
-
-            # Get total distance travelled
-            expected_linear_distance_travelled = linear_speed * (duration - self.start_time)
-            self.total_distance_travelled += expected_linear_distance_travelled
             # Update position estimate based on the last known position and the expected distance travelled
             self.position_estimate = (self.position_estimate[-1][0] + expected_linear_distance_travelled * math.cos(self.position_estimate[-1][2]),
                                        self.position_estimate[-1][1] + expected_linear_distance_travelled * math.sin(self.position_estimate[-1][2]),
