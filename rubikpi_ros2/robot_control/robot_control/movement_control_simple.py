@@ -130,8 +130,9 @@ class WaypointController(Node):
             actual_linear if linear_speed != 0 else actual_angular)
 
         duration = amount / max(actual_speed, 1e-6)
+        movement_start_time = time.monotonic()
         self.movement = (
-            linear_speed, angular_speed, actual_angular, duration, starting_pose, movement_description)
+            linear_speed, angular_speed, actual_angular, movement_start_time, duration, starting_pose, movement_description)
 
         # LOG: Movement command and calibration output
         left, right = np.linalg.solve(
@@ -158,16 +159,16 @@ class WaypointController(Node):
         '''
 
         now = time.monotonic()
-        if not self.start_time:
-            self.start_time = now
+        #if not self.start_time:
+            #self.start_time = now
 
         # perform a burst of movement, don't respond to an April Tag in this time
         # if reached the end of the movement (based on time) stop movement and record the last post time used
         # otherwise enforce the speeds
         if self.movement:
-            linear_speed, angular_speed, angular_rotation, duration,starting_pose, movement_description = self.movement
+            linear_speed, angular_speed, angular_rotation, movement_start_time, duration, starting_pose, movement_description = self.movement
             
-            if now < self.start_time + duration:
+            if now < movement_start_time + duration:
                 self.command(linear_speed, angular_speed)
                 return
             
@@ -181,7 +182,7 @@ class WaypointController(Node):
                                        starting_pose[1] + expected_linear_distance_travelled * math.sin(self.position_history[-1][2]),
                                        starting_pose[2] + angular_speed * duration)
             
-            self.start_time = 0
+            #self.start_time = 0
 
             self.command(0.0, 0.0)
             self.movement = None
