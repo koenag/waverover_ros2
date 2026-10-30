@@ -151,6 +151,10 @@ class WaypointController(Node):
         '''
         Perform bursts of 'open-loop' movement before checking position and heading with an April Tag in view
         '''
+        self.get_logger().info(
+            f"[DEBUG] index={self.waypoint_index}, "
+            f"total={len(self.waypoints)}, done={self.done}"
+        )
         if self.done:
             self.get_logger().info(f"DISTANCE TRAVELLED: {self.total_distance_travelled}")
             self.get_logger().info(f"2D TRAJECTORY HISTORY: {self.position_history}")
