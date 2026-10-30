@@ -319,7 +319,7 @@ class WaypointController(Node):
                     speed,
                     0.0,
                     min(distance_remaining, MAX_DRIVE_SEGMENT),
-                    self.pose
+                    self.pose,
                     'DRIVE'
                 )
 
