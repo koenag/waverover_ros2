@@ -28,7 +28,8 @@ setup(
         'console_scripts': [
             'motor_control = robot_control.motor_control:main',
             'movement_control_simple = robot_control.movement_control_simple:main',
-            'movement_control_simple_rishika = robot_control.movement_control_simple_rishika:main',
+            'movement_control_quintic = robot_control.movement_control_quintic:main',
+            'tag_localization = robot_control.tag_localization:main',
             'velocity_control = robot_control.velocity_control:main',
         ],
     },
