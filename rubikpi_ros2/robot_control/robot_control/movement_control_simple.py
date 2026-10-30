@@ -31,6 +31,8 @@ REPORT_PERIOD = 0.5
 #robot settings:
 ROBOT_RADIUS = 0.10
 
+OFFSET = (0.67, 0.4, 0)
+
 
 def wrap_angle(angle):
     return (angle + math.pi) % (2 * math.pi) - math.pi
@@ -63,6 +65,7 @@ class WaypointController(Node):
         self.pose_time = 0.0
         self.used_pose_time = 0.0
         self.total_distance_travelled  = 0
+        self.start_time = 0
 
         # (linear speed, angular speed, end time, movement_description)
         self.movement = None
@@ -73,8 +76,8 @@ class WaypointController(Node):
         self.create_timer(CALLBACK_FREQUENCY, self.move)
 
         # 2D Trajectory history
-        self.position_history = []
-        self.position_estimate= (0.0, 0.0, 0.0)
+        self.position_history = [OFFSET]
+        self.position_estimate= OFFSET
         self.create_timer(REPORT_PERIOD, self.report_position_history)
 
         # LOG: Controller initialization
@@ -97,7 +100,7 @@ class WaypointController(Node):
         elif self.pose is not None:
             self.position_history.append(self.pose)
         else:
-            self.position_history.append(self.position_history[-1] if self.position_history else (0.0, 0.0, 0.0))
+            self.position_history.append(self.position_history[-1] if self.position_history else self.position_estimate)
 
     def command(self, linear_speed, angular_speed):
         left, right = np.linalg.solve(
@@ -159,20 +162,20 @@ class WaypointController(Node):
             linear_speed, angular_speed, angular_rotation, duration, movement_description = self.movement
             
             if now < self.start_time + duration:
-                
                 self.command(linear_speed, angular_speed)
                 return
+            
             expected_linear_distance_travelled = linear_speed * duration
-            expected_angular_distance_travelled = angular_rotation * ROBOT_RADIUS * 180/ math.pi
+            expected_angular_distance_travelled = angular_rotation * ROBOT_RADIUS
             self.total_distance_travelled += expected_linear_distance_travelled 
             self.total_distance_travelled  += expected_angular_distance_travelled
             
             # Update position estimate based on the last known position and the expected distance travelled
             self.position_estimate = (self.position_history[-1][0] + expected_linear_distance_travelled * math.cos(self.position_history[-1][2]),
                                        self.position_history[-1][1] + expected_linear_distance_travelled * math.sin(self.position_history[-1][2]),
-                                       self.position_history[-1][2] + angular_speed * (duration - self.start_time))
+                                       self.position_history[-1][2] + angular_speed * duration)
             
-            self.start_time = None
+            self.start_time = 0
 
             self.command(0.0, 0.0)
             self.movement = None
