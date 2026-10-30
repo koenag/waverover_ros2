@@ -85,7 +85,7 @@ def rpy_quaternion(roll, pitch, yaw):
     )
 
 
-
+# Gets yaw from quarternion.
 def quaternion_yaw(q):
     x, y, z, w = q
     return math.atan2(
@@ -122,6 +122,8 @@ class TagLocalizationNode(Node):
             x, y, z = tag['position']
             yaw = math.radians(tag['yaw_deg'])
 
+            # the roll is to consider that it's mounted on the wall (rotation in x axis)
+            # Z+ is facing outside of the april tag, Y+ is facing down, X+ is facing right
             tag_rotation = quat_multiply(
                 rpy_quaternion(0.0, 0.0, yaw),
                 rpy_quaternion(math.pi / 2, 0.0, 0.0)
