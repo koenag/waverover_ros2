@@ -31,7 +31,7 @@ REPORT_PERIOD = 0.5
 #robot settings:
 ROBOT_RADIUS = 0.10
 
-OFFSET = (0.69, 0.4, 0)
+OFFSET = (0.7, 0.4, 0)
 
 
 def wrap_angle(angle):
