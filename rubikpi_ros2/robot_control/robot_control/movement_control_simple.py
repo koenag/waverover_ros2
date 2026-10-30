@@ -194,9 +194,11 @@ class WaypointController(Node):
                 f'Final heading error={math.degrees(final_heading_error):+.1f}deg'
             )
 
-            #First check if you're close to the end of the segment in distance, then in heading. 
-            # If you're too far, move forward
-            # If your heading is off
+            # First check if you're close to the end of the segment in distance, then in heading.
+            # --> If you're close enough in both, mark the waypoint as complete and move to the next one. 
+            # --> If you're close in distance but not heading, turn to correct your heading. 
+            # --> If you're not close in distance but are facing the right way, drive forward. 
+            # --> If you're not facing the right way, turn to correct your heading.
             if distance_remaining <= POSITION_TOLERANCE:
                 # reached the end of segment and either need to turn that final rotation (in which case turn)
                 # or are within heading tolerance in which case mark this segment as done
