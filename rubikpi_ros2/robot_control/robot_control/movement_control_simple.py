@@ -53,7 +53,7 @@ class WaypointController(Node):
         
         self.create_subscription(
             Pose2D, '/robot_pose', self.update_pose, 10)
-
+        self.done = False
         with open('./waypoint_2.txt') as file:
             self.waypoints = [
                 tuple(map(float, line.split(',')))
@@ -151,6 +151,10 @@ class WaypointController(Node):
         '''
         Perform bursts of 'open-loop' movement before checking position and heading with an April Tag in view
         '''
+        if self.done:
+            self.get_logger().info(f"DISTANCE TRAVELLED: {self.total_distance_travelled}")
+            self.get_logger().info(f"2D TRAJECTORY HISTORY: {self.position_history}")
+            return
         now = time.monotonic()
         if not self.start_time:
             self.start_time = now
@@ -194,6 +198,7 @@ class WaypointController(Node):
             self.command(0.0, 0.0)
             self.get_logger().info(f"DISTANCE TRAVELLED: {self.total_distance_travelled}")
             self.get_logger().info(f"2D TRAJECTORY HISTORY: {self.position_history}")
+            self.done = True
             return
 
         # once you're done with the movement check for repositioning if you can see an april tag / have gotten a new one
@@ -378,6 +383,7 @@ def main(args=None):
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+        
 
 
 if __name__ == '__main__':
