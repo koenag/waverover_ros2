@@ -1,4 +1,3 @@
-
 import math
 import time
 
@@ -27,6 +26,7 @@ SEARCH_ROTATION_TIME = 0.10
 SEARCH_PAUSE = 3.0
 
 CALLBACK_FREQUENCY = 0.05
+REPORT_PERIOD = 0.5
 
 #robot settings:
 ROBOT_RADIUS = 0.10
@@ -72,6 +72,11 @@ class WaypointController(Node):
 
         self.create_timer(CALLBACK_FREQUENCY, self.move)
 
+        # 2D Trajectory history
+        self.position_history = []
+        self.position_estimate= (0.0, 0.0, 0.0)
+        self.create_timer(REPORT_PERIOD, self.report_position_history)
+
         # LOG: Controller initialization
         self.get_logger().info(
             f'[START] {len(self.waypoints)} waypoints loaded | '
@@ -85,6 +90,14 @@ class WaypointController(Node):
         '''
         self.pose = (message.x, message.y, message.theta)
         self.pose_time = time.monotonic()
+
+    def report_position_history(self):
+        if self.movement:
+            self.position_history.append(self.position_estimate)
+        elif self.pose is not None:
+            self.position_history.append(self.pose)
+        else:
+            self.position_history.append(self.position_history[-1] if self.position_history else (0.0, 0.0, 0.0))
 
     def command(self, linear_speed, angular_speed):
         left, right = np.linalg.solve(
@@ -145,7 +158,6 @@ class WaypointController(Node):
         if self.movement:
             linear_speed, angular_speed, angular_rotation, duration, movement_description = self.movement
             
-
             if now < self.start_time + duration:
                 
                 self.command(linear_speed, angular_speed)
@@ -156,6 +168,14 @@ class WaypointController(Node):
             self.total_distance_travelled  += expected_angular_distance_travelled
             
             
+
+            # Get total distance travelled
+            expected_linear_distance_travelled = linear_speed * (duration - self.start_time)
+            self.total_distance_travelled += expected_linear_distance_travelled
+            # Update position estimate based on the last known position and the expected distance travelled
+            self.position_estimate = (self.position_estimate[-1][0] + expected_linear_distance_travelled * math.cos(self.position_estimate[-1][2]),
+                                       self.position_estimate[-1][1] + expected_linear_distance_travelled * math.sin(self.position_estimate[-1][2]),
+                                       self.position_estimate[-1][2] + angular_speed * (duration - self.start_time))
             
             self.start_time = None
 
