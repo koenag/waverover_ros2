@@ -168,9 +168,9 @@ class WaypointController(Node):
             self.total_distance_travelled  += expected_angular_distance_travelled
             
             # Update position estimate based on the last known position and the expected distance travelled
-            self.position_estimate = (self.position_estimate[-1][0] + expected_linear_distance_travelled * math.cos(self.position_estimate[-1][2]),
-                                       self.position_estimate[-1][1] + expected_linear_distance_travelled * math.sin(self.position_estimate[-1][2]),
-                                       self.position_estimate[-1][2] + angular_speed * (duration - self.start_time))
+            self.position_estimate = (self.position_history[-1][0] + expected_linear_distance_travelled * math.cos(self.position_history[-1][2]),
+                                       self.position_history[-1][1] + expected_linear_distance_travelled * math.sin(self.position_history[-1][2]),
+                                       self.position_history[-1][2] + angular_speed * (duration - self.start_time))
             
             self.start_time = None
 
@@ -190,6 +190,7 @@ class WaypointController(Node):
         if self.waypoint_index >= len(self.waypoints):
             self.command(0.0, 0.0)
             self.get_logger().info(f"DISTANCE TRAVELLED: {self.total_distance_travelled}")
+            self.get_logger().info(f"2D TRAJECTORY HISTORY: {self.position_history}")
             return
 
         # once you're done with the movement check for repositioning if you can see an april tag / have gotten a new one
