@@ -65,7 +65,7 @@ class WaypointController(Node):
         # (search phase, phase start time)
         self.search = None
 
-        self.create_timer(CONTROL_PERIOD, self.update)
+        self.create_timer(CONTROL_PERIOD, self.move)
 
         # LOG: Controller initialization
         self.get_logger().info(
@@ -96,7 +96,7 @@ class WaypointController(Node):
 
         return linear_speed / scale, angular_speed / scale
 
-    def start_move(self, linear_speed, angular_speed, amount, now, movement_description):
+    def create_movement(self, linear_speed, angular_speed, amount, movement_description):
         actual_linear, actual_angular = self.command(
             linear_speed, angular_speed)
 
@@ -105,7 +105,7 @@ class WaypointController(Node):
 
         duration = amount / max(actual_speed, 1e-6)
         self.movement = (
-            linear_speed, angular_speed, now + duration, movement_description)
+            linear_speed, angular_speed, duration, movement_description)
 
         # LOG: Movement command and calibration output
         left, right = np.linalg.solve(
@@ -126,21 +126,29 @@ class WaypointController(Node):
             f'L={left / scale:+.3f}, R={right / scale:+.3f}'
         )
 
-    def update(self):
+    def move(self):
         '''
         Perform bursts of 'open-loop' movement before checking position and heading with an April Tag in view
         '''
         now = time.monotonic()
+        if not self.start_time:
+            self.start_time = now
 
         # perform a burst of movement, don't respond to an April Tag in this time
         # if reached the end of the movement (based on time) stop movement and record the last post time used
         # otherwise enforce the speeds
         if self.movement:
-            linear_speed, angular_speed, end_time, movement_description = self.movement
+            linear_speed, angular_speed, duration, movement_description = self.movement
+            
 
-            if now < end_time:
+            if now < self.start_time + duration:
+                
                 self.command(linear_speed, angular_speed)
                 return
+            expected_distance_travelled = linear_speed * (duration - self.start_time)
+            self.total_distance_travelled += expected_distance_travelled 
+            
+            self.start_time = None
 
             self.command(0.0, 0.0)
             self.movement = None
@@ -233,10 +241,10 @@ class WaypointController(Node):
                         f'{math.degrees(final_heading_error):+.1f}deg'
                     )
 
-                    self.start_move(
+                    self.create_movement(
                         0.0,
                         math.copysign(TURN_SPEED, final_heading_error),
-                        abs(final_heading_error), now, 'FINAL TURN'
+                        abs(final_heading_error), 'FINAL TURN'
                     )
 
             # not in the right position and are facing the wrong way, in which case rotate along
@@ -250,10 +258,10 @@ class WaypointController(Node):
                     f'Direction={"LEFT/CCW" if heading_error > 0 else "RIGHT/CW"}'
                 )
 
-                self.start_move(
+                self.create_movement(
                     0.0,
                     math.copysign(TURN_SPEED, heading_error),
-                    abs(heading_error), now, 'TURN'
+                    abs(heading_error), 'TURN'
                 )
 
             # facing the right way, but not yet reached the end of the segment, in which case keep moving forward
@@ -269,11 +277,11 @@ class WaypointController(Node):
                     f'Heading error={math.degrees(heading_error):+.1f}deg'
                 )
 
-                self.start_move(
+                self.create_movement(
                     speed,
                     0.0,
                     min(distance_remaining, MAX_DRIVE_SEGMENT),
-                    now,
+               
                     'DRIVE'
                 )
 
