@@ -99,26 +99,25 @@ class TagLocalizationNode(Node):
     def __init__(self):
         super().__init__('tag_localization')
 
-        self.declare_parameter('camera_frame', 'camera_frame')
-
-        self.declare_parameter(
-            'base_to_camera_xyz', [0.095, 0.0, 0.127]
-        )
-
-        self.declare_parameter(
-            'base_to_camera_rpy',
-            [math.radians(-80), 0.0, math.radians(-90)]
-        )
-
+        self.declare_parameter('camera_frame', 'camera_frame') #scales to if we have multiple cameras
         self.declare_parameter('detections_topic', '/tf')
         self.declare_parameter('pose_topic', '/robot_pose')
 
+        # sets the camera frame that we are accesssing (in this case there's only 1 camera)
         self.camera_frame = str(
             self.get_parameter('camera_frame').value
         )
 
-        self.tag_world = {}
-
+        # building the extrinsic matrix
+        self.translation_coeffs = [0.095, 0.0, 0.127]
+        self.rotation_coeffs = [math.radians(-80), 0.0, math.radians(-90)]
+        self.extrinsic_matrix = (
+            tuple(float(v) for v in self.translation_coeffs),
+            rpy_quaternion(self.rotation_coeffs[0], self.rotation_coeffs[1], self.rotation_coeffs[2])
+        )
+        
+    
+        self.tag_in_world_coordinates= {}
         for tag_id, tag in config['tags'].items():
             x, y, z = tag['position']
             yaw = math.radians(tag['yaw_deg'])
@@ -128,27 +127,11 @@ class TagLocalizationNode(Node):
                 rpy_quaternion(math.pi / 2, 0.0, 0.0)
             )
 
-            self.tag_world[f'tag36h11:{tag_id}'] = (
+            self.tag_in_world_coordinates[f'tag36h11:{tag_id}'] = (
                 (float(x), float(y), float(z)),
                 tag_rotation,
             )
 
-        xyz = list(
-            self.get_parameter('base_to_camera_xyz').value
-        )
-        rpy = list(
-            self.get_parameter('base_to_camera_rpy').value
-        )
-
-        if len(xyz) != 3 or len(rpy) != 3:
-            raise ValueError(
-                'Camera extrinsics must be XYZ and RPY triples'
-            )
-
-        self.base_to_camera = (
-            tuple(float(v) for v in xyz),
-            rpy_quaternion(*(float(v) for v in rpy)),
-        )
 
         self.pose_pub = self.create_publisher(
             Pose2D,
@@ -166,16 +149,20 @@ class TagLocalizationNode(Node):
         self.get_logger().info(
             f'[START] Localization initialized | '
             f'Camera={self.camera_frame} | '
-            f'Configured tags={len(self.tag_world)} | '
+            f'Configured tags={len(self.tag_in_world_coordinates)} | '
             f'Publishing to {self.get_parameter("pose_topic").value}'
         )
 
-        if not self.tag_world:
+        if not self.tag_in_world_coordinates:
             self.get_logger().warning(
                 '[CONFIG] No AprilTag world coordinates configured'
             )
 
     def fuse_apriltag_observations(self, observations):
+        '''
+        takes in a list of potential robot poses [x, y, theta]
+        computes a weighted average of the potential poses to approxiamate the true pose
+        '''
         if not observations:
             return None
 
@@ -225,7 +212,21 @@ class TagLocalizationNode(Node):
         return x, y, yaw
 
     def tf_callback(self, msg):
-        observations = []
+        '''
+        Recieves AprilTag coordinates from tf node
+        Performs transformation:
+            Camera --> World
+                1. Where is the camera from the tag
+                2. Where is the tag from the world
+                This tells us where is the camera from the world
+                
+                tag_to_camera is camera coordinates relative to tag reference frame
+                world_to_tag is tag coordinates relative to world reference frame
+
+                Camera coordinates in world refernce is: world_to_tag * tag_to_camera
+                
+        '''
+        observed_poses = []
         tag_details = []
 
         for stamped in msg.transforms:
@@ -234,7 +235,7 @@ class TagLocalizationNode(Node):
 
             if parent != self.camera_frame:
                 continue
-            if child not in self.tag_world:
+            if child not in self.tag_in_world_coordinates:
                 continue
 
             t = stamped.transform.translation
@@ -243,24 +244,25 @@ class TagLocalizationNode(Node):
             camera_to_tag = (
                 (t.x, t.y, t.z),
                 (r.x, r.y, r.z, r.w),
+            ) # tag coordinates relative to camera reference frame
+            world_to_tag = self.tag_in_world_coordinates[child] # tag coordinates relative to world reference frame
+
+            # find camera coordinates relative to world reference frame
+            world_to_camera = transform_compose(
+                world_to_tag, 
+                transform_inverse(camera_to_tag)
+            )
+            camera_to_center_of_robot = transform_compose(
+                world_to_camera, 
+                transform_inverse(self.extrinsic_matrix)
             )
 
-            world_to_tag = self.tag_world[child]
-            tag_to_camera = transform_inverse(camera_to_tag)
-
-            camera_to_base = transform_inverse(self.base_to_camera)
-
-            world_to_base = transform_compose(
-                transform_compose(world_to_tag, tag_to_camera),
-                camera_to_base,
-            )
-
-            observations.append(world_to_base)
+            observed_poses.append(camera_to_center_of_robot)
 
             # Save individual tag estimates for diagnostic logging.
-            robot_x, robot_y, robot_z = world_to_base[0]
+            robot_x, robot_y, robot_z = camera_to_center_of_robot[0]
             robot_yaw = math.degrees(
-                quaternion_yaw(world_to_base[1])
+                quaternion_yaw(camera_to_center_of_robot[1])
             )
 
             tag_details.append(
@@ -274,12 +276,12 @@ class TagLocalizationNode(Node):
             )
 
         # No configured AprilTags in this TF message.
-        if not observations:
+        if not observed_poses:
             return
 
         # Log all tag estimates together for easier comparison.
         self.get_logger().info(
-            f'[DETECTION] {len(observations)} AprilTag(s) received'
+            f'[DETECTION] {len(observed_poses)} AprilTag(s) received'
         )
 
         for child, x, y, z, yaw in tag_details:
@@ -291,11 +293,11 @@ class TagLocalizationNode(Node):
                 f'Yaw={yaw:+.1f}deg'
             )
 
-        # Fuse the independent tag observations.
-        fused_pose = self.fuse_apriltag_observations(observations)
+        # collate individual AprilTag observations to estimate actual robot pose
+        averaged_robot_pose = self.fuse_apriltag_observations(observed_poses)
 
         # Gracefully handle rejected/invalid fusion results.
-        if fused_pose is None:
+        if averaged_robot_pose is None:
             self.get_logger().warning(
                 '[FUSION FAILED] All AprilTag observations '
                 'were rejected (position disagreement > 0.20m). '
@@ -303,8 +305,7 @@ class TagLocalizationNode(Node):
             )
             return
 
-        x, y, yaw = fused_pose
-
+        x, y, yaw = averaged_robot_pose
         out = Pose2D()
         out.x = x
         out.y = y

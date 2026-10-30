@@ -10,7 +10,7 @@ from std_msgs.msg import Float32MultiArray
 
 
 # Motion settings
-CALIBRATION = np.array([
+INTRINSTIC_CALIBRATION_MATRIIX = np.array([
     [0.565034, 0.733764],
     [-4.08242, 3.82298]
 ])
@@ -36,10 +36,15 @@ def wrap_angle(angle):
 
 class WaypointController(Node):
     def __init__(self):
+        '''
+        Publishes L,R to motor_commands topic
+        Subscribes to robot_pose 
+        '''
         super().__init__('waypoint_controller_node')
 
         self.publisher = self.create_publisher(
             Float32MultiArray, 'motor_commands', 10)
+        
         self.create_subscription(
             Pose2D, '/robot_pose', self.update_pose, 10)
 
@@ -54,7 +59,7 @@ class WaypointController(Node):
         self.pose_time = 0.0
         self.used_pose_time = 0.0
 
-        # (linear speed, angular speed, end time, movement name)
+        # (linear speed, angular speed, end time, movement_description)
         self.movement = None
 
         # (search phase, phase start time)
@@ -70,12 +75,15 @@ class WaypointController(Node):
         )
 
     def update_pose(self, message):
+        '''
+        Find what the pose it as save it to self.pose (as a class variable so we can access it when we adjust robot movement)
+        '''
         self.pose = (message.x, message.y, message.theta)
         self.pose_time = time.monotonic()
 
     def command(self, linear_speed, angular_speed):
         left, right = np.linalg.solve(
-            CALIBRATION, [linear_speed, angular_speed])
+            INTRINSTIC_CALIBRATION_MATRIIX, [linear_speed, angular_speed])
 
         scale = max(
             1.0,
@@ -88,7 +96,7 @@ class WaypointController(Node):
 
         return linear_speed / scale, angular_speed / scale
 
-    def start_move(self, linear_speed, angular_speed, amount, now, name):
+    def start_move(self, linear_speed, angular_speed, amount, now, movement_description):
         actual_linear, actual_angular = self.command(
             linear_speed, angular_speed)
 
@@ -97,11 +105,11 @@ class WaypointController(Node):
 
         duration = amount / max(actual_speed, 1e-6)
         self.movement = (
-            linear_speed, angular_speed, now + duration, name)
+            linear_speed, angular_speed, now + duration, movement_description)
 
         # LOG: Movement command and calibration output
         left, right = np.linalg.solve(
-            CALIBRATION, [linear_speed, angular_speed])
+            INTRINSTIC_CALIBRATION_MATRIIX, [linear_speed, angular_speed])
 
         scale = max(
             1.0,
@@ -110,7 +118,7 @@ class WaypointController(Node):
         )
 
         self.get_logger().info(
-            f'[MOVE START] {name} | '
+            f'[MOVE START] {movement_description} | '
             f'Amount={amount:.3f}{"m" if linear_speed != 0 else "rad"} | '
             f'Duration={duration:.2f}s | '
             f'v={actual_linear:+.3f}m/s | '
@@ -119,11 +127,16 @@ class WaypointController(Node):
         )
 
     def update(self):
+        '''
+        Perform bursts of 'open-loop' movement before checking position and heading with an April Tag in view
+        '''
         now = time.monotonic()
 
-        # Finish the current movement before using another pose.
+        # perform a burst of movement, don't respond to an April Tag in this time
+        # if reached the end of the movement (based on time) stop movement and record the last post time used
+        # otherwise enforce the speeds
         if self.movement:
-            linear_speed, angular_speed, end_time, name = self.movement
+            linear_speed, angular_speed, end_time, movement_description = self.movement
 
             if now < end_time:
                 self.command(linear_speed, angular_speed)
@@ -136,7 +149,7 @@ class WaypointController(Node):
 
             # LOG: Movement completed
             self.get_logger().info(
-                f'[MOVE END] {name} completed | '
+                f'[MOVE END] {movement_description} completed | '
                 f'Waiting for a new AprilTag pose'
             )
             return
@@ -146,27 +159,29 @@ class WaypointController(Node):
             self.command(0.0, 0.0)
             return
 
-        # Only plan using a pose received after the previous movement ended.
+        # once you're done with the movement check for repositioning if you can see an april tag / have gotten a new one
+
+        # Handles case where you knew where you were at a previous time step and you got a new april tag input (ie you can determine your new location)
         if self.pose is not None and self.pose_time > self.used_pose_time:
             self.used_pose_time = self.pose_time
             self.search = None
 
-            x, y, heading = self.pose
+            current_x, current_y, current_heading = self.pose
             goal_x, goal_y, goal_heading = self.waypoints[self.waypoint_index]
 
-            dx = goal_x - x
-            dy = goal_y - y
+            dx = goal_x - current_x
+            dy = goal_y - current_y
             distance_remaining = math.hypot(dx, dy)
 
-            desired_heading = math.atan2(dy, dx)
-            heading_error = wrap_angle(desired_heading - heading)
-            final_heading_error = wrap_angle(goal_heading - heading)
+            desired_heading_to_reach_eos = math.atan2(dy, dx)
+            heading_error = wrap_angle(desired_heading_to_reach_eos - current_heading)
+            final_heading_error = wrap_angle(goal_heading - current_heading)
 
             # LOG: Current pose and target waypoint
             self.get_logger().info(
                 f'[POSE] WP {self.waypoint_index} | '
-                f'Robot=({x:.3f}, {y:.3f}, '
-                f'{math.degrees(heading):+.1f}deg) | '
+                f'Robot=({current_x:.3f}, {current_y:.3f}, '
+                f'{math.degrees(current_heading):+.1f}deg) | '
                 f'Target=({goal_x:.3f}, {goal_y:.3f}, '
                 f'{math.degrees(goal_heading):+.1f}deg)'
             )
@@ -174,12 +189,17 @@ class WaypointController(Node):
             # LOG: Distance and heading errors used for planning
             self.get_logger().info(
                 f'[ERROR] Distance={distance_remaining:.3f}m | '
-                f'Desired direction={math.degrees(desired_heading):+.1f}deg | '
+                f'Desired direction={math.degrees(desired_heading_to_reach_eos):+.1f}deg | '
                 f'Heading error={math.degrees(heading_error):+.1f}deg | '
                 f'Final heading error={math.degrees(final_heading_error):+.1f}deg'
             )
 
+            #First check if you're close to the end of the segment in distance, then in heading. 
+            # If you're too far, move forward
+            # If your heading is off
             if distance_remaining <= POSITION_TOLERANCE:
+                # reached the end of segment and either need to turn that final rotation (in which case turn)
+                # or are within heading tolerance in which case mark this segment as done
                 if abs(final_heading_error) <= HEADING_TOLERANCE:
 
                     # LOG: Waypoint successfully completed
@@ -192,7 +212,7 @@ class WaypointController(Node):
                     self.waypoint_index += 1
 
                     if self.waypoint_index < len(self.waypoints):
-                        # LOG: Advancing to next waypoint
+                       
                         self.get_logger().info(
                             f'[NEXT WAYPOINT] Moving to WP {self.waypoint_index}: '
                             f'{self.waypoints[self.waypoint_index]}'
@@ -217,6 +237,8 @@ class WaypointController(Node):
                         abs(final_heading_error), now, 'FINAL TURN'
                     )
 
+            # not in the right position and are facing the wrong way, in which case rotate along
+            # the error to correct your heading
             elif abs(heading_error) > HEADING_TOLERANCE:
 
                 # LOG: Robot must align with target before driving
@@ -232,6 +254,7 @@ class WaypointController(Node):
                     abs(heading_error), now, 'TURN'
                 )
 
+            # facing the right way, but not yet reached the end of the segment, in which case keep moving forward
             else:
                 # Slow down when approaching the waypoint.
                 speed = DRIVE_SPEED
@@ -257,7 +280,10 @@ class WaypointController(Node):
         # No new pose: stop while waiting for localization.
         self.command(0.0, 0.0)
 
+        # last case, you don't see an april tag and/or don't know where you are. Solution: Rotate until you see a tag
         if self.pose is None or self.pose_time <= self.used_pose_time:
+            
+            # Added a brief inital pause to handle any starting delays with launch files
             if self.search is None:
                 self.search = ('INITIAL_PAUSE', now)
 
@@ -269,6 +295,8 @@ class WaypointController(Node):
             phase, start_time = self.search
             elapsed = now - start_time
 
+
+            # Can either be in a pause or rotate state. After being in one state for more than MACROS tiime, switch to the other state
             if phase == 'INITIAL_PAUSE' and elapsed >= SEARCH_INITIAL_PAUSE:
                 self.search = ('ROTATE', now)
 
@@ -293,6 +321,7 @@ class WaypointController(Node):
                     '[SEARCH] Still no AprilTag; rotating again'
                 )
 
+            # Do the rotation
             if self.search[0] == 'ROTATE':
                 self.command(0.0, TURN_SPEED)
 
