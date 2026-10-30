@@ -225,7 +225,13 @@ class TagLocalizationNode(Node):
                 tag_to_camera is camera coordinates relative to tag reference frame
                 world_to_tag is tag coordinates relative to world reference frame
 
-                Camera coordinates in world refernce is: world_to_tag * tag_to_camera
+                Camera coordinates in world reference frame is: world_to_tag * tag_to_camera
+
+        T_R^W = T_T^W * (T_T^C)^-1 * (T_C^R)^-1
+        1. T_T^W is tag coordinates relative to world reference frame
+        2. T_T^C is tag coordinates relative to camera reference frame
+        3. T_C^R is camera coordinates relative to robot reference frame
+        4. T_R^W is robot coordinates relative to world reference frame
                 
         '''
         observed_poses = []
