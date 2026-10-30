@@ -19,7 +19,6 @@ DRIVE_SPEED = 0.2
 TURN_SPEED = 3.0
 POSITION_TOLERANCE = 0.10
 HEADING_TOLERANCE = 0.2
-
 MAX_DRIVE_SEGMENT = 0.20
 
 # Localization search settings
@@ -27,7 +26,10 @@ SEARCH_INITIAL_PAUSE = 2.0
 SEARCH_ROTATION_TIME = 0.10
 SEARCH_PAUSE = 3.0
 
-CONTROL_PERIOD = 0.05
+CALLBACK_FREQUENCY = 0.05
+
+#robot settings:
+ROBOT_RADIUS = 0.10
 
 
 def wrap_angle(angle):
@@ -40,7 +42,9 @@ class WaypointController(Node):
         Publishes L,R to motor_commands topic
         Subscribes to robot_pose 
         '''
+    
         super().__init__('waypoint_controller_node')
+        
 
         self.publisher = self.create_publisher(
             Float32MultiArray, 'motor_commands', 10)
@@ -58,6 +62,7 @@ class WaypointController(Node):
         self.pose = None
         self.pose_time = 0.0
         self.used_pose_time = 0.0
+        self.total_distance_travelled  = 0
 
         # (linear speed, angular speed, end time, movement_description)
         self.movement = None
@@ -65,7 +70,7 @@ class WaypointController(Node):
         # (search phase, phase start time)
         self.search = None
 
-        self.create_timer(CONTROL_PERIOD, self.move)
+        self.create_timer(CALLBACK_FREQUENCY, self.move)
 
         # LOG: Controller initialization
         self.get_logger().info(
@@ -105,7 +110,7 @@ class WaypointController(Node):
 
         duration = amount / max(actual_speed, 1e-6)
         self.movement = (
-            linear_speed, angular_speed, duration, movement_description)
+            linear_speed, angular_speed, actual_angular, duration, movement_description)
 
         # LOG: Movement command and calibration output
         left, right = np.linalg.solve(
@@ -138,15 +143,19 @@ class WaypointController(Node):
         # if reached the end of the movement (based on time) stop movement and record the last post time used
         # otherwise enforce the speeds
         if self.movement:
-            linear_speed, angular_speed, duration, movement_description = self.movement
+            linear_speed, angular_speed, angular_rotation, duration, movement_description = self.movement
             
 
             if now < self.start_time + duration:
                 
                 self.command(linear_speed, angular_speed)
                 return
-            expected_distance_travelled = linear_speed * (duration - self.start_time)
-            self.total_distance_travelled += expected_distance_travelled 
+            expected_linear_distance_travelled = linear_speed * (duration - self.start_time)
+            expected_angular_distance_travelled = angular_rotation * ROBOT_RADIUS * math.pi/ 180
+            self.total_distance_travelled += expected_linear_distance_travelled 
+            self.total_distance_travelled  += expected_angular_distance_travelled
+            
+            
             
             self.start_time = None
 
@@ -165,6 +174,7 @@ class WaypointController(Node):
         # All waypoints completed.
         if self.waypoint_index >= len(self.waypoints):
             self.command(0.0, 0.0)
+            self.get_logger().info(f"DISTANCE TRAVELLED: {self.total_distance_travelled}")
             return
 
         # once you're done with the movement check for repositioning if you can see an april tag / have gotten a new one
