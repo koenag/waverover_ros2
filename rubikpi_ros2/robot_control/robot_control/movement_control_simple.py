@@ -71,6 +71,8 @@ class MovementController(Node):
         self.used_pose_time = 0.0
         self.total_linear_distance_travelled = 0
         self.total_angular_distance_travelled  = 0
+
+        self.pause_until = None
       
 
         # (linear speed, angular speed, end time, movement_description)
@@ -158,8 +160,11 @@ class MovementController(Node):
         '''
         Perform bursts of 'open-loop' movement before checking position and heading with an April Tag in view
         '''
-
+        
         now = time.monotonic()
+        if self.pause_until and now < self.pause_until:
+            self.command(0.0, 0.0)
+            return
 
         # perform a burst of movement, don't respond to an April Tag in this time
         # if reached the end of the movement (based on time) stop movement and record the last post time used
@@ -201,7 +206,7 @@ class MovementController(Node):
             self.get_logger().info(f"LINEAR DISTANCE TRAVELLED: {self.total_linear_distance_travelled}")
             self.get_logger().info(f"ANGULAR DISTANCE TRAVELLED: {self.total_angular_distance_travelled}")
             self.get_logger().info(f"2D TRAJECTORY HISTORY: {self.position_history}")
-            self.done = True
+            
             return
 
         # once you're done with the movement check for repositioning if you can see an april tag / have gotten a new one
@@ -255,7 +260,7 @@ class MovementController(Node):
                         f'Position error={distance_remaining:.3f}m | '
                         f'Heading error={math.degrees(final_heading_error):+.1f}deg'
                     )
-
+                    self.pause_until = time.monotonic() + 1.0
                     self.waypoint_index += 1
 
                     if self.waypoint_index < len(self.waypoints):
