@@ -69,8 +69,9 @@ class MovementController(Node):
         self.pose = None
         self.pose_time = 0.0
         self.used_pose_time = 0.0
-        self.total_distance_travelled  = 0
-        self.start_time = 0
+        self.total_linear_distance_travelled = 0
+        self.total_angular_distance_travelled  = 0
+      
 
         # (linear speed, angular speed, end time, movement_description)
         self.movement = None
@@ -159,8 +160,6 @@ class MovementController(Node):
         '''
 
         now = time.monotonic()
-        #if not self.start_time:
-            #self.start_time = now
 
         # perform a burst of movement, don't respond to an April Tag in this time
         # if reached the end of the movement (based on time) stop movement and record the last post time used
@@ -174,15 +173,15 @@ class MovementController(Node):
             
             expected_linear_distance_travelled = linear_speed * duration
             expected_angular_distance_travelled = angular_rotation * ROBOT_RADIUS
-            self.total_distance_travelled += expected_linear_distance_travelled 
-            self.total_distance_travelled  += expected_angular_distance_travelled
+            self.total_linear_distance_travelled += expected_linear_distance_travelled 
+            self.total_angular_distance_travelled  += expected_angular_distance_travelled
             
             # Update position estimate based on the last known position and the expected distance travelled
             self.position_estimate = (starting_pose[0] + expected_linear_distance_travelled * math.cos(self.position_history[-1][2]),
                                        starting_pose[1] + expected_linear_distance_travelled * math.sin(self.position_history[-1][2]),
                                        starting_pose[2] + angular_speed * duration)
             
-            #self.start_time = 0
+        
 
             self.command(0.0, 0.0)
             self.movement = None
@@ -199,7 +198,8 @@ class MovementController(Node):
         # All waypoints completed.
         if self.waypoint_index >= len(self.waypoints):
             self.command(0.0, 0.0)
-            self.get_logger().info(f"DISTANCE TRAVELLED: {self.total_distance_travelled}")
+            self.get_logger().info(f"LINEAR DISTANCE TRAVELLED: {self.total_linear_distance_travelled}")
+            self.get_logger().info(f"ANGULAR DISTANCE TRAVELLED: {self.total_angular_distance_travelled}")
             self.get_logger().info(f"2D TRAJECTORY HISTORY: {self.position_history}")
             self.done = True
             return
