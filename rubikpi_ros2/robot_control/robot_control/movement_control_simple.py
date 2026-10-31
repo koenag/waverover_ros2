@@ -38,14 +38,14 @@ def wrap_angle(angle):
     return (angle + math.pi) % (2 * math.pi) - math.pi
 
 
-class WaypointController(Node):
+class MovementController(Node):
     def __init__(self):
         '''
         Publishes L,R to motor_commands topic
         Subscribes to robot_pose 
         '''
     
-        super().__init__('waypoint_controller_node')
+        super().__init__('movement_controller_node')
         
 
         self.publisher = self.create_publisher(
@@ -377,7 +377,7 @@ class WaypointController(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = WaypointController()
+    node = MovementController()
 
     try:
         rclpy.spin(node)
