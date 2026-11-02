@@ -4,21 +4,63 @@
 ```text
 waverover_ros2/
 ├── README.md
-└── rubikpos2/
-    └── robotcontrol/
-        ├── setup.py
-        └── robotcontrol/
-            ├── motor_control.py
-            ├── control_movement_simple.py
-            └── control_movement_quintic.py
+├── calibrate_camera.py
+├── waypoint_1.txt
+├── waypoint_2.txt
+└── rubikpi_ros2/
+    ├── README.md
+    ├── robot_control/
+    │   ├── package.xml
+    │   ├── setup.py
+    │   ├── setup.cfg
+    │   ├── resource/
+    │   │   └── robot_control
+    │   ├── config/
+    │   │   └── apriltag_map.yaml              # Known AprilTag positions and orientations
+    │   ├── launch/
+    │   │   └── robot_teleop_launch.py
+    │   └── robot_control/
+    │       ├── __init__.py
+    │       ├── motor_control.py               # Motor commands, serial communication
+    │       ├── movement_control_simple.py     # Turtle graphics waypoint navigation
+    │       ├── movement_control_quintic.py    # Quintic trajectory controller
+    │       ├── tag_localization.py            # AprilTag locations transforms to robot pose
+    │       └── teleop_example.py
+    ├── robot_launch/
+    │   ├── package.xml
+    │   ├── setup.py
+    │   ├── setup.cfg
+    │   ├── resource/
+    │   │   └── robot_launch
+    │   └── launch/
+    │       └── robot_control_movement.launch.py  # Launches camera, detection,
+    │                                            # localization, and motion control
+    ├── robot_vision/
+    │   ├── package.xml
+    │   ├── CMakeLists.txt
+    │   ├── config/
+    │   │   └── camera_parameter.yaml          # Camera intrinsics and distortion
+    │   ├── launch/
+    │   │   └── robot_vision_camera.launch.py
+    │   ├── include/
+    │   │   └── robot_vision_camera/
+    │   │       └── robot_vision_camera.h
+    │   └── src/
+    │       └── robot_vision_camera.cpp
+    └── apriltag_ros/
+        ├── README.md
+        ├── package.xml
+        ├── CMakeLists.txt
+        ├── cfg/
+        │   └── tags_36h11.yaml                # Detector settings and tag definitions
+        ├── launch/
+        │   ├── apriltag_launch.py
+        │   └── camera_36h11.launch.yml
+        └── src/
+            ├── AprilTagNode.cpp
+            ├── conversion.cpp
+            ├── pose_estimation.cpp
+            ├── pose_estimation.hpp
+            ├── tag_functions.cpp
+            └── tag_functions.hpp
 ```
-
-### Node Descriptions
-
-- **`motor_control.py`**: Subscribes to motor commands from the movement controller and sends them to the robot's motors.
-
-- **`control_movement_simple.py`**: Publishes motor commands to `motor_control.py`. This node originally used keyboard shortcuts, which have since been removed and replaced with an implicit kinematics model. It uses a turtle graphics approach to navigate the waypoint course through sequential rotations and straight-line movements.
-
-- **`control_movement_quintic.py`**: Implements the quintic trajectory approach, generating quintic paths for the robot to follow. This node publishes motor commands but is not currently in use.
-
-- **`setup.py`**: Defines the Python package configuration and registers the ROS 2 executable nodes.
