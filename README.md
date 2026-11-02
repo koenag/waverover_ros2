@@ -5,8 +5,8 @@
 waverover_ros2/
 ├── README.md
 ├── calibrate_camera.py
-├── waypoint_1.txt
-├── waypoint_2.txt
+├── waypoint_1.txt # HW 1 waypoints
+├── waypoint_2.txt # HW 2 waypoints
 └── rubikpi_ros2/
     ├── README.md
     ├── robot_control/
@@ -24,7 +24,7 @@ waverover_ros2/
     │       ├── motor_control.py               # Motor commands, serial communication
     │       ├── movement_control_simple.py     # Turtle graphics waypoint navigation
     │       ├── movement_control_quintic.py    # Quintic trajectory controller
-    │       ├── tag_localization.py            # AprilTag locations transforms to robot pose
+    │       ├── tag_localization.py            # AprilTag locations in camera coordinate system transforms to robot pose in world coordinate system
     │       └── teleop_example.py
     ├── robot_launch/
     │   ├── package.xml
