@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Calibrate R for AprilTag measurements (single file, 4x4 matrices).
 
@@ -58,6 +59,11 @@ class CalibrateR(Node):
         self.declare_parameter('camera_frame', 'camera_frame')
         self.declare_parameter('n_frames', 150)
         self.declare_parameter('label', 'trial')
+        self.declare_parameter('true_fwd', 1.0)
+        self.declare_parameter('true_left', 0.0)
+
+        self.true_fwd = float(self.get_parameter('true_fwd').value)
+        self.true_left = float(self.get_parameter('true_left').value)
         self.camera_frame = self.get_parameter('camera_frame').value
         self.n = int(self.get_parameter('n_frames').value)
         self.label = self.get_parameter('label').value
@@ -88,7 +94,9 @@ class CalibrateR(Node):
             tag_in_robot_system = camera_in_robot_system @ tag_in_camera_system
             # the x,y,z of the tag in the camera coordinates
             fwd, left, up = tag_in_robot_system[:3, 3]
-            self.data.setdefault(tag, []).append([fwd, left, up])
+            error_fwd = self.true_fwd - fwd
+            error_left = self.true_left - left
+            self.data.setdefault(tag, []).append([error_fwd,error_left])
 
             n = len(self.data[tag])
             if n % 25 == 0:
@@ -98,25 +106,46 @@ class CalibrateR(Node):
 
     def report(self):
         worst = np.zeros(2)
+
         for tag, pts in sorted(self.data.items()):
             P = np.array(pts)
+
             if len(P) < 10:
                 print(f'{tag}: only {len(P)} frames, skipped')
                 continue
-            Z = P[:, :2]                      # z = [forward, left]
-            R = np.cov(Z.T, ddof=1)           # 2x2 sample covariance
-            lag1 = [np.corrcoef(Z[:-1, i], Z[1:, i])[0, 1] for i in range(2)]
-            print(f'\n[{self.label}] {tag}  N={len(Z)}  range={np.linalg.norm(Z.mean(0)):.3f} m')
-            print(f'  mean [fwd,left] = {Z.mean(0).round(4)}   (compare to tape measure)')
-            print(f'  std  [fwd,left] = {np.sqrt(np.diag(R)).round(4)}  lag1 autocorr = {np.round(lag1, 2)}')
+
+            E = P[:, :2]  # [error_fwd, error_left]
+
+            R = np.cov(E.T, ddof=1)
+            R_mse = (E.T @ E) / len(E)
+            bias = E.mean(axis=0)
+
+            lag1 = [
+                np.corrcoef(E[:-1, i], E[1:, i])[0, 1]
+                for i in range(2)
+            ]
+
+            true_range = np.hypot(self.true_fwd, self.true_left)
+
+            print(f'\n[{self.label}] {tag} N={len(E)} range={true_range:.3f} m')
+            print(f'  mean error [fwd,left] = {bias.round(4)}')
+            print(f'  std [fwd,left] = {np.sqrt(np.diag(R)).round(4)}')
+            print(f'  lag1 autocorr = {np.round(lag1, 2)}')
             print(f'  R_full =\n{R}')
+            print(f'  R_mse =\n{R_mse}')
             print(f'  R_diag = np.diag([{R[0,0]:.3e}, {R[1,1]:.3e}])  # m^2')
+
             worst = np.maximum(worst, np.diag(R))
-            np.savetxt(f'R_{self.label}_{tag.replace(":", "_")}.csv', P, delimiter=',',
-                       header='fwd,left,up')
-        print(f'\nworst-case diag this trial: np.diag([{worst[0]:.3e}, {worst[1]:.3e}])')
 
+            np.savetxt(
+                f'R_{self.label}_{tag.replace(":", "_")}.csv',
+                P,
+                delimiter=',',
+                header='error_fwd,error_left'
+            )
 
+        print(f'\nworst-case diag this trial: '
+            f'np.diag([{worst[0]:.3e}, {worst[1]:.3e}])')
 def main():
     rclpy.init()
     node = CalibrateR()
@@ -132,3 +161,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
