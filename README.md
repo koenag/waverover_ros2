@@ -5,6 +5,7 @@
 waverover_ros2/
 ├── README.md
 ├── calibrate_camera.py
+├── plot_trajectory.py
 ├── waypoint_1.txt
 ├── waypoint_2.txt
 └── rubikpi_ros2/
