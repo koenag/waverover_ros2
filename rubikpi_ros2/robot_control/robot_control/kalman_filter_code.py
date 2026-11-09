@@ -1,9 +1,31 @@
+from dataclasses import dataclass
+
 import numpy as np
 
-MEASUREMENT_R = np.array([
-    [0.01, 0.0],
-    [0.0, 0.01],
-])
+
+@dataclass(frozen=True)
+class MotionNoise:
+    # Variances that grow with how far the robot moved (d, meters) and
+    # turned (a, radians) during one prediction step:
+    #   var_forward = q_d_per_m * d + q_d_per_rad * a
+    #   var_heading = q_theta_per_m * d + q_theta_per_rad * a
+    q_d_per_m: float
+    q_d_per_rad: float
+    q_theta_per_m: float
+    q_theta_per_rad: float
+
+
+# Calibrate these values separately.
+MOTION_NOISE = MotionNoise(
+    q_d_per_m=0.001,
+    q_d_per_rad=0.0002,
+    q_theta_per_m=0.002,
+    q_theta_per_rad=0.003,
+)
+
+# Fixed covariance of a tag's (forward, left) in the robot frame, in m^2.
+# Replace with the matrix computed from stationary AprilTag measurements.
+MEASUREMENT_R = np.diag([0.01, 0.01])
 
 
 class KalmanEKF:
@@ -13,11 +35,7 @@ class KalmanEKF:
         self.P = np.zeros((3, 3))  # Initial pose is assumed known.
         self.landmark_map = {}  # tag_id (int) -> index of the landmark's x in state
 
-        self.Q = np.array([
-                    [0.001, 0.002],
-                    [0.002, 0.003],
-                ])# noise on (v, w)
-        self.R = MEASUREMENT_R# noise on a tag's (x, y), robot frame
+        self.R = MEASUREMENT_R.copy()  # noise on a tag's (x, y), robot frame
 
     # Keep an angle between -pi and pi.
     @staticmethod
@@ -25,26 +43,58 @@ class KalmanEKF:
         return (angle + np.pi) % (2.0 * np.pi) - np.pi
 
     # Predict the pose and compute the state and control Jacobians.
+    # The arc is integrated with the heading halfway through the turn.
     def pred_state(self, state, v, w, dt):
-        theta = state[2]
-        c, s = np.cos(theta), np.sin(theta)
+        distance = v * dt
+        turn = w * dt
+        midpoint = state[2] + turn / 2.0
+        c, s = np.cos(midpoint), np.sin(midpoint)
         n = len(state)
 
         pred = state.copy()
-        pred[0] += v * dt * c
-        pred[1] += v * dt * s
-        pred[2] = self.wrap_angle(theta + w * dt)
+        pred[0] += distance * c
+        pred[1] += distance * s
+        pred[2] = self.wrap_angle(state[2] + turn)
 
         F = np.eye(n)
-        F[0, 2] = -v * dt * s
-        F[1, 2] = v * dt * c
+        F[0, 2] = -distance * s
+        F[1, 2] = distance * c
 
+        # Maps (distance error, turn error) into pose errors. The turn column
+        # also moves x and y because it shifts the midpoint heading.
         G = np.zeros((n, 2))
-        G[0, 0] = dt * c
-        G[1, 0] = dt * s
-        G[2, 1] = dt
+        G[:3] = ((c, -distance * s / 2.0),
+                 (s, distance * c / 2.0),
+                 (0.0, 1.0))
 
         return pred, F, G
+
+    # Predict over dt (skipped when dt is 0), then correct with any tags.
+    # tags: {tag_id: np.array([x, y])} in the ROBOT frame. An empty dict means
+    # a prediction-only update; dt = 0 means a correction-only update.
+    def update_state(self, v, w, dt, tags):
+        if not np.all(np.isfinite((v, w, dt))) or dt < 0:
+            raise ValueError("update_state needs finite v, w and dt >= 0")
+
+        if dt > 0:
+            self.state, F, G = self.pred_state(self.state, v, w, dt)
+
+            # Noise grows with the motion, so a stationary robot adds none.
+            d, a = abs(v * dt), abs(w * dt)
+            Q = np.diag([
+                MOTION_NOISE.q_d_per_m * d + MOTION_NOISE.q_d_per_rad * a,
+                MOTION_NOISE.q_theta_per_m * d + MOTION_NOISE.q_theta_per_rad * a,
+            ])
+            self.P = self.calc_P(F, G, self.P, Q)
+
+        # A fixed tag order keeps the sequential updates repeatable.
+        for tag_id in sorted(tags):
+            z = tags[tag_id]
+            if tag_id not in self.landmark_map:
+                self.add_landmark(tag_id, z)
+            else:
+                predicted_z, H = self.z_pred(tag_id)
+                self.kalman_update(z, predicted_z, H)
 
     # Propagate the covariance through the motion model.
     def calc_P(self, F, G, P, M):
@@ -61,7 +111,6 @@ class KalmanEKF:
             [s,  c],
         ])
 
-        # add the distance between robot and tag to the currente estimated pose of the robot
         landmark = np.array([x, y]) + rotation @ z
         n = len(self.state)
 
@@ -131,16 +180,3 @@ class KalmanEKF:
         I_KH = np.eye(len(self.state)) - K @ H
         self.P = I_KH @ self.P @ I_KH.T + K @ self.R @ K.T
         self.P = 0.5 * (self.P + self.P.T)
-
-    # Predict, then correct with any tags. tags: {tag_id: np.array([x, y])}
-    # in the ROBOT frame. An empty dict means a prediction-only update.
-    def update_state(self, v, w, dt, tags):
-        self.state, F, G = self.pred_state(self.state, v, w, dt)
-        self.P = self.calc_P(F, G, self.P, self.Q)
-
-        for tag_id, z in tags.items():
-            if tag_id not in self.landmark_map:
-                self.add_landmark(tag_id, z)
-            else:
-                predicted_z, H = self.z_pred(tag_id)
-                self.kalman_update(z, predicted_z, H)
