@@ -16,7 +16,7 @@ CALIBRATION_MATRIX = np.array([
 
 MAX_MOTOR_COMMAND = 0.5
 DRIVE_SPEED = 0.2                 # Requested forward speed (m/s)
-TURN_SPEED = 2.5                  # Requested turning speed (rad/s)
+TURN_SPEED = 3.5                  # Requested turning speed (rad/s)
 POSITION_TOLERANCE = 0.1          # meters
 HEADING_TOLERANCE = 0.2           # radians
 MAX_DRIVE_SEGMENT = 0.20          # meters per movement burst
