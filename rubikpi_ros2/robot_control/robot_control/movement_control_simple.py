@@ -24,7 +24,6 @@ CALLBACK_FREQUENCY = 0.05
 # Must match the EKF's initial state (zeros) and the frame the waypoints are in.
 OFFSET = (0.0, 0.0, 0.0)
 
-DELAY = 1.0          # seconds stopped after a burst so slam can collect tags
 STARTUP_WAIT = 3.0   # seconds to let slam come up before the first burst
 
 
@@ -188,11 +187,11 @@ class MovementController(Node):
 
             self.command(0.0, 0.0)
             dt = now - start                  # how long the motors were on
-            stop_time = self.ros_now()        # absolute time, must be ROS time
+            start_window = self.ros_now()        # absolute time, must be ROS time
 
             self.burst_count += 1
             self.slam_publisher.publish(Float64MultiArray(data=[
-                linear, angular, dt, stop_time, stop_time + DELAY]))
+                linear, angular, dt, start_window]))
 
             self.movement = None
             self.waiting_slam = True

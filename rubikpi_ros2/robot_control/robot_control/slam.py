@@ -4,9 +4,9 @@ The EKF is a plain Python class (kalman_filter_code.py, class KalmanEKF) that
 this node calls directly, so there are no ekf topics.
 
   robot_movement_vw    (movement -> slam)
-      [v, w, dt, stop_time, end_of_delay]
+      [v, w, dt, start_window]
       Absolute ROS-clock times in seconds. Tags whose image stamp is in
-      [stop_time, end_of_delay] are accepted.
+      [start_window] are accepted.
 
   verified_pose_update (slam -> movement)
       [ok, x, y, theta, n_landmarks, id1, mx1, my1, ...]
@@ -29,7 +29,8 @@ from tf2_msgs.msg import TFMessage
 from robot_control.kalman_filter_code import KalmanEKF
 
 STARTUP_POSE_DELAY = 2.0  # seconds after launch before the starting pose is sent
-
+DELAY = 0.4
+SETTLE_TIME = 0.3
 
 def stamp_to_sec(stamp):
     return stamp.sec + stamp.nanosec * 1e-9
@@ -42,12 +43,11 @@ class RobotIter:
     None once the pose has been published back. Tags are only collected
     while one exists."""
 
-    def __init__(self, v, w, dt, stop_time, end_of_delay):
+    def __init__(self, v, w, dt, start_window):
         self.v = v
         self.w = w
         self.dt = dt
-        self.end_of_delay = end_of_delay
-        self.stop_time = stop_time
+        self.start_window= start_window
         self.tags = {}  # tag_id -> list of robot-frame [x, y] detections
 
 
@@ -117,20 +117,20 @@ class SlamNode(Node):
     # ------------------------------------------------------------------
     def segment_callback(self, msg):
         d = msg.data
-        if len(d) < 5:
+        if len(d) < 4:
             self.get_logger().error("robot_movement_vw needs 5 values")
             return
 
         self.robot_iter = RobotIter(
             v=float(d[0]), w=float(d[1]), dt=float(d[2]),
-            stop_time=float(d[3]), end_of_delay=float(d[4]),
+            start_window=float(d[3]),
         )
 
         # At end_of_delay, send whatever we have (0 or more tags).
         # (A timer, not a direct call: the delay is still in the future and
         # tf_callback must keep running to collect tags meanwhile.)
         self.commit_timer = self.cancel_timer(self.commit_timer)
-        wait = max(0.001, self.robot_iter.end_of_delay - self.now_sec())
+        wait = max(0.001, self.robot_iter.start_window + DELAY + SETTLE_TIME - self.now_sec())
         self.commit_timer = self.create_timer(wait, self.invoke_ekf)
 
     # ------------------------------------------------------------------
@@ -153,7 +153,7 @@ class SlamNode(Node):
             # Ignore tags captured before the segment stopped or after the
             # delay ended (image stamp, not arrival time).
             t_img = stamp_to_sec(stamped.header.stamp)
-            if not (it.stop_time <= t_img <= it.end_of_delay):
+            if not (it.start_window + SETTLE_TIME <= t_img <= it.start_window + SETTLE_TIME + DELAY):
                 continue
 
             try:
