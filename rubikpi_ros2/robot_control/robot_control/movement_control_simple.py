@@ -56,7 +56,7 @@ class MovementController(Node):
             Pose2D, '/slam/segment_pose', self.update_segment_pose, 10)
 
         # Preserve the existing waypoint format: x, y, theta per line.
-        with open('./waypoint_2.txt') as file:
+        with open('./waypoint_3.txt') as file:
             self.waypoints = [
                 (x + OFFSET[0], y + OFFSET[1], wrap_angle(theta + OFFSET[2]))
                 for line in file if line.strip()
@@ -198,19 +198,6 @@ class MovementController(Node):
             self.command(0.0, 0.0)
             return
 
-        # 5. Stop permanently once the final waypoint is reached.
-        if self.waypoint_index >= len(self.waypoints):
-            self.command(0.0, 0.0)
-            if not self.finished:
-                self.finished = True
-                self.get_logger().info('[DONE] All waypoints completed')
-                self.get_logger().info(
-                    f'Linear distance: {self.total_linear_distance_travelled:.3f} m | '
-                    f'Angular distance: {self.total_angular_distance_travelled:.3f} rad')
-                self.get_logger().info(
-                    f'Trajectory history: {self.position_history}')
-            return
-
         # 6. Keep the ORIGINAL navigation decisions: turn toward the waypoint,
         #    drive a short distance, then correct final heading at the waypoint.
         x, y, theta = self.pose
@@ -231,7 +218,10 @@ class MovementController(Node):
             if abs(final_heading_error) <= HEADING_TOLERANCE:
                 # Position and final heading both satisfy the tolerances.
                 self.get_logger().info(f'[WAYPOINT REACHED] {self.waypoint_index}')
-                self.waypoint_index += 1
+                # Loop around to the first waypoint if the last one is reached.
+                self.waypoint_index = (
+                    self.waypoint_index + 1
+                ) % len(self.waypoints)
                 self.pause_until = now + WAYPOINT_PAUSE
             else:
                 # Position reached, but final orientation needs correction.

@@ -67,6 +67,9 @@ class SLAMNode(Node):
         self.segment_ready = False
         self.seen_frames = set()
 
+        # Logging time tracking
+        self.last_state_log = 0.0
+
         # Transform from camera optical coordinates to rover coordinates.
         # Robot axes: x forward, y left.  Keep the original calibrated values.
         roll, pitch, yaw = map(radians, CAMERA_RPY_DEG)
@@ -239,6 +242,13 @@ class SLAMNode(Node):
         self.predict_to(now)
         if self.failed:
             return
+
+        # Log the complete EKF state once per second.
+        if now - self.last_state_log >= 1.0:
+            self.get_logger().info(
+                f"EKF state: {np.round(self.ekf.state, 3)}"
+            )
+            self.last_state_log = now
 
         # Publish a live estimate at every timer tick, with or without tags.
         self.publish_pose(self.pose_pub)
