@@ -174,16 +174,9 @@ class MovementController(Node):
         # Debug check make sure if we have a self.movement we are not delaying its start time
         if self.waiting_slam: 
             assert not self.movement 
-        else:
-            assert self.movement is not None
 
-        # Startup wait / pause after reaching a waypoint
-        if self.pause_until and now < self.pause_until:
-            self.command(0.0, 0.0)
-            return
-
-        # Stopped after a burst: wait until slam replies (update_pose sets waiting to false)
-        if self.waiting_slam:
+        # Stopped after a burst: wait until slam replies (update_pose sets waiting to false) OR  Startup wait / pause after reaching a waypoint
+        if self.waiting_slam or (self.pause_until and now < self.pause_until):
             self.command(0.0, 0.0)
             return
 
