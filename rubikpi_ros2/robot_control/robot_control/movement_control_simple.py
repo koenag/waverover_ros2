@@ -4,8 +4,7 @@ import time
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Pose2D
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Float64MultiArray
 
 
 # Motion settings
@@ -20,18 +19,13 @@ POSITION_TOLERANCE = 0.1
 HEADING_TOLERANCE = 0.2
 MAX_DRIVE_SEGMENT = 0.20
 
-# Localization search settings
-SEARCH_INITIAL_PAUSE = 2.0
-SEARCH_ROTATION_TIME = 0.10
-SEARCH_PAUSE = 3.0
-
 CALLBACK_FREQUENCY = 0.05
-REPORT_PERIOD = 0.5
 
-#robot settings:
-ROBOT_RADIUS = 0.10
+# Must match the EKF's initial state (zeros) and the frame the waypoints are in.
+OFFSET = (0.0, 0.0, 0.0)
 
-OFFSET = (0.7, 0.4, 0)
+DELAY = 1.0          # seconds stopped after a burst so slam can collect tags
+STARTUP_WAIT = 3.0   # seconds to let slam come up before the first burst
 
 
 def wrap_angle(angle):
@@ -41,19 +35,22 @@ def wrap_angle(angle):
 class MovementController(Node):
     def __init__(self):
         '''
-        Publishes L,R to motor_commands topic
-        Subscribes to robot_pose 
+        Publishes L,R to motor_commands
+        Publishes [seq, v, w, dt, stop_time, end_of_delay] to robot_movement_vw
+        Subscribes to verified_pose_update from slam
         '''
-    
         super().__init__('movement_controller_node')
-        
 
+        # Motors take float32 [left, right]
         self.publisher = self.create_publisher(
             Float32MultiArray, 'motor_commands', 10)
-        
+
+        # Slam topics are float64 (absolute ROS times don't fit in float32)
+        self.slam_publisher = self.create_publisher(
+            Float64MultiArray, 'robot_movement_vw', 10)
         self.create_subscription(
-            Pose2D, '/robot_pose', self.update_pose, 10)
-       
+            Float64MultiArray, 'verified_pose_update', self.update_pose, 10)
+
         with open('./waypoint_2.txt') as file:
             self.waypoints = [
                 (
@@ -66,27 +63,24 @@ class MovementController(Node):
             ]
 
         self.waypoint_index = 1  # Waypoint 0 is the starting position
-        self.pose = None
-        self.pose_time = 0.0
-        self.used_pose_time = 0.0
-        self.total_linear_distance_travelled = 0
-        self.total_angular_distance_travelled  = 0
 
-        self.pause_until = None
-      
+        self.pose = OFFSET           # latest pose from slam (x, y, theta)
+        self.landmarks = {}          # latest landmarks from slam
+        self.pose_time = time.monotonic()  # when self.pose was last set
+        self.used_pose_time = 0.0          # pose_time the planner last used
 
-        # (linear speed, angular speed, end time, movement_description)
+        # Wait for slam to come up before the first burst
+        self.pause_until = time.monotonic() + STARTUP_WAIT
+
+        # (linear, requested angular, actual angular, start time, duration,
+        #  starting pose, description)
         self.movement = None
 
-        # (search phase, phase start time)
-        self.search = None
+        # Slam handshake
+        self.seq_num = 0             # id of the last segment sent to slam
+        self.waiting_slam = False    # True from the end of a burst until slam replies
 
         self.create_timer(CALLBACK_FREQUENCY, self.move)
-
-        # 2D Trajectory history
-        self.position_history = [OFFSET]
-        self.position_estimate= OFFSET
-        self.create_timer(REPORT_PERIOD, self.report_position_history)
 
         # LOG: Controller initialization
         self.get_logger().info(
@@ -95,20 +89,27 @@ class MovementController(Node):
             f'Turn speed={TURN_SPEED:.2f}rad/s'
         )
 
-    def update_pose(self, message):
-        '''
-        Find what the pose it as save it to self.pose (as a class variable so we can access it when we adjust robot movement)
-        '''
-        self.pose = (message.x, message.y, message.theta)
-        self.pose_time = time.monotonic()
+    def ros_now(self):
+        return self.get_clock().now().nanoseconds * 1e-9
 
-    def report_position_history(self):
-        if self.movement:
-            self.position_history.append(self.position_estimate)
-        elif self.pose is not None:
-            self.position_history.append(self.pose)
+    def update_pose(self, msg):
+        '''
+        Slam's reply: [seq, ok, x, y, theta, n, id, mx, my, ...]
+        Only accepted while we are waiting, and only for the segment we sent.
+        Anything else (a late reply, slam's startup pose) is ignored.
+        '''
+        d = msg.data
+        seq, ok = int(d[0]), d[1]
+        if not self.waiting_slam or seq != self.seq_num:
+            return
+        if ok:
+            self.pose = (d[2], d[3], d[4])
         else:
-            self.position_history.append(self.position_history[-1] if self.position_history else self.position_estimate)
+            self.get_logger().warn('slam update failed; keeping last pose')
+        n = int(d[5])
+        self.landmarks = {int(d[6 + 3*k]): (d[7 + 3*k], d[8 + 3*k]) for k in range(n)}
+        self.waiting_slam = False            # lets the next burst start
+        self.pose_time = time.monotonic()    # marks the pose as new for the planner
 
     def command(self, linear_speed, angular_speed):
         left, right = np.linalg.solve(
@@ -125,7 +126,7 @@ class MovementController(Node):
 
         return linear_speed / scale, angular_speed / scale
 
-    def create_movement(self, linear_speed, angular_speed, amount,starting_pose, movement_description):
+    def create_movement(self, linear_speed, angular_speed, amount, starting_pose, movement_description):
         actual_linear, actual_angular = self.command(
             linear_speed, angular_speed)
 
@@ -135,7 +136,8 @@ class MovementController(Node):
         duration = amount / max(actual_speed, 1e-6)
         movement_start_time = time.monotonic()
         self.movement = (
-            linear_speed, angular_speed, actual_angular, movement_start_time, duration, starting_pose, movement_description)
+            actual_linear, angular_speed, actual_angular, movement_start_time,
+            duration, starting_pose, movement_description)
 
         # LOG: Movement command and calibration output
         left, right = np.linalg.solve(
@@ -158,63 +160,57 @@ class MovementController(Node):
 
     def move(self):
         '''
-        Perform bursts of 'open-loop' movement before checking position and heading with an April Tag in view
+        Burst of open-loop movement, then stop and wait for slam's pose,
+        then plan the next burst from that pose.
         '''
-        
         now = time.monotonic()
+
+        # Startup wait / pause after reaching a waypoint
         if self.pause_until and now < self.pause_until:
             self.command(0.0, 0.0)
             return
 
-        # perform a burst of movement, don't respond to an April Tag in this time
-        # if reached the end of the movement (based on time) stop movement and record the last post time used
-        # otherwise enforce the speeds
+        # Stopped after a burst: wait until slam replies (see update_pose)
+        if self.waiting_slam:
+            self.command(0.0, 0.0)
+            return
+
+        # In a burst: keep driving, then stop and report it to slam
         if self.movement:
-            linear_speed, angular_speed, angular_rotation, movement_start_time, duration, starting_pose, movement_description = self.movement
-            
+            (linear_speed, angular_speed, angular_rotation, movement_start_time,
+             duration, starting_pose, movement_description) = self.movement
+
             if now < movement_start_time + duration:
-                self.command(linear_speed, angular_speed)
+                self.command(linear_speed, angular_rotation)
                 return
-            
-            expected_linear_distance_travelled = linear_speed * duration
-            expected_angular_distance_travelled = angular_rotation * ROBOT_RADIUS
-            self.total_linear_distance_travelled += expected_linear_distance_travelled 
-            self.total_angular_distance_travelled  += expected_angular_distance_travelled
-            
-            # Update position estimate based on the last known position and the expected distance travelled
-            self.position_estimate = (starting_pose[0] + expected_linear_distance_travelled * math.cos(self.position_history[-1][2]),
-                                       starting_pose[1] + expected_linear_distance_travelled * math.sin(self.position_history[-1][2]),
-                                       starting_pose[2] + angular_speed * duration)
-            
-        
 
             self.command(0.0, 0.0)
+            dt = now - movement_start_time    # how long the motors were on
+            stop_time = self.ros_now()        # absolute time, must be ROS time
+
+            self.seq_num += 1                 # once, before publishing
+            self.slam_publisher.publish(Float64MultiArray(data=[
+                float(self.seq_num), linear_speed, angular_rotation, dt,
+                stop_time, stop_time + DELAY]))
+
             self.movement = None
             self.used_pose_time = self.pose_time
-            self.search = None
+            self.waiting_slam = True
 
-            # LOG: Movement completed
             self.get_logger().info(
                 f'[MOVE END] {movement_description} completed | '
-                f'Waiting for a new AprilTag pose'
+                f'sent seq={self.seq_num}, waiting for slam pose'
             )
             return
 
         # All waypoints completed.
         if self.waypoint_index >= len(self.waypoints):
             self.command(0.0, 0.0)
-            self.get_logger().info(f"LINEAR DISTANCE TRAVELLED: {self.total_linear_distance_travelled}")
-            self.get_logger().info(f"ANGULAR DISTANCE TRAVELLED: {self.total_angular_distance_travelled}")
-            self.get_logger().info(f"2D TRAJECTORY HISTORY: {self.position_history}")
-            
             return
 
-        # once you're done with the movement check for repositioning if you can see an april tag / have gotten a new one
-
-        # Handles case where you knew where you were at a previous time step and you got a new april tag input (ie you can determine your new location)
+        # Plan the next burst whenever there is a pose we have not used yet
         if self.pose is not None and self.pose_time > self.used_pose_time:
             self.used_pose_time = self.pose_time
-            self.search = None
 
             current_x, current_y, current_heading = self.pose
             goal_x, goal_y, goal_heading = self.waypoints[self.waypoint_index]
@@ -245,13 +241,11 @@ class MovementController(Node):
             )
 
             # First check if you're close to the end of the segment in distance, then in heading.
-            # --> If you're close enough in both, mark the waypoint as complete and move to the next one. 
-            # --> If you're close in distance but not heading, turn to correct your heading. 
-            # --> If you're not close in distance but are facing the right way, drive forward. 
+            # --> If you're close enough in both, mark the waypoint as complete and move to the next one.
+            # --> If you're close in distance but not heading, turn to correct your heading.
+            # --> If you're not close in distance but are facing the right way, drive forward.
             # --> If you're not facing the right way, turn to correct your heading.
             if distance_remaining <= POSITION_TOLERANCE:
-                # reached the end of segment and either need to turn that final rotation (in which case turn)
-                # or are within heading tolerance in which case mark this segment as done
                 if abs(final_heading_error) <= HEADING_TOLERANCE:
 
                     # LOG: Waypoint successfully completed
@@ -262,18 +256,17 @@ class MovementController(Node):
                     )
                     self.pause_until = time.monotonic() + 1.0
                     self.waypoint_index += 1
+                    # No movement means no new slam pose, so mark the current
+                    # pose as new to let the planner run again after the pause.
+                    self.pose_time = time.monotonic()
 
                     if self.waypoint_index < len(self.waypoints):
-                       
                         self.get_logger().info(
                             f'[NEXT WAYPOINT] Moving to WP {self.waypoint_index}: '
                             f'{self.waypoints[self.waypoint_index]}'
                         )
                     else:
-                        # LOG: Navigation finished
-                        self.get_logger().info(
-                            '[DONE] All waypoints completed'
-                        )
+                        self.get_logger().info('[DONE] All waypoints completed')
 
                 else:
                     # LOG: Position reached, but final heading is incorrect
@@ -286,12 +279,10 @@ class MovementController(Node):
                     self.create_movement(
                         0.0,
                         math.copysign(TURN_SPEED, final_heading_error),
-
-                        abs(final_heading_error), self.pose,'FINAL TURN'
+                        abs(final_heading_error), self.pose, 'FINAL TURN'
                     )
 
-            # not in the right position and are facing the wrong way, in which case rotate along
-            # the error to correct your heading
+            # facing the wrong way: rotate to correct the heading
             elif abs(heading_error) > HEADING_TOLERANCE:
 
                 # LOG: Robot must align with target before driving
@@ -304,13 +295,11 @@ class MovementController(Node):
                 self.create_movement(
                     0.0,
                     math.copysign(TURN_SPEED, heading_error),
-                    
-                    abs(heading_error),self.pose, 'TURN'
+                    abs(heading_error), self.pose, 'TURN'
                 )
 
-            # facing the right way, but not yet reached the end of the segment, in which case keep moving forward
+            # facing the right way, not yet at the waypoint: drive forward
             else:
-                # Slow down when approaching the waypoint.
                 speed = DRIVE_SPEED
 
                 # LOG: Robot aligned sufficiently to drive
@@ -331,53 +320,8 @@ class MovementController(Node):
 
             return
 
-        # No new pose: stop while waiting for localization.
+        # Nothing to do: stay stopped.
         self.command(0.0, 0.0)
-
-        # last case, you don't see an april tag and/or don't know where you are. Solution: Rotate until you see a tag
-        if self.pose is None or self.pose_time <= self.used_pose_time:
-            
-            # Added a brief inital pause to handle any starting delays with launch files
-            if self.search is None:
-                self.search = ('INITIAL_PAUSE', now)
-
-                # LOG: Localization unavailable
-                self.get_logger().warning(
-                    '[SEARCH] No AprilTag pose available; starting search'
-                )
-
-            phase, start_time = self.search
-            elapsed = now - start_time
-
-
-            # Can either be in a pause or rotate state. After being in one state for more than MACROS tiime, switch to the other state
-            if phase == 'INITIAL_PAUSE' and elapsed >= SEARCH_INITIAL_PAUSE:
-                self.search = ('ROTATE', now)
-
-                # LOG: Beginning search rotation
-                self.get_logger().info(
-                    '[SEARCH] Rotating LEFT/CCW to find AprilTag'
-                )
-
-            elif phase == 'ROTATE' and elapsed >= SEARCH_ROTATION_TIME:
-                self.search = ('PAUSE', now)
-
-                # LOG: Search rotation completed
-                self.get_logger().info(
-                    '[SEARCH] Rotation finished; waiting for AprilTag'
-                )
-
-            elif phase == 'PAUSE' and elapsed >= SEARCH_PAUSE:
-                self.search = ('ROTATE', now)
-
-                # LOG: Retrying localization search
-                self.get_logger().info(
-                    '[SEARCH] Still no AprilTag; rotating again'
-                )
-
-            # Do the rotation
-            if self.search[0] == 'ROTATE':
-                self.command(0.0, TURN_SPEED)
 
 
 def main(args=None):
@@ -393,7 +337,6 @@ def main(args=None):
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-        
 
 
 if __name__ == '__main__':
