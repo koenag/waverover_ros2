@@ -32,7 +32,7 @@ MEASUREMENT_R = np.array([
 TIMER_PERIOD = 0.05      # Publish continuous pose at 20 Hz.
 MAX_PREDICT_STEP = 0.05  # Keep individual motion integrations short.
 SETTLE_TIME = 0.3       # Wait for physical motion to stop.
-OBSERVATION_TIME = 0.4  # Accept stationary camera frames during this window.
+OBSERVATION_TIME = 0.5  # Accept stationary camera frames during this window.
 COMMAND_TIMEOUT = 0.3  # Only check heartbeats while a nonzero command is active.
 
 # The same calibration transform as the previous slam_node.py.
