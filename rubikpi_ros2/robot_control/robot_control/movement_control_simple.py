@@ -248,6 +248,7 @@ class MovementController(Node):
 
                 if self.waypoint_index >= len(self.waypoints):
                     self.get_logger().info('[DONE] All waypoints completed')
+                    self.waypoint_index = 0
             else:
                 self.create_movement(
                     0.0, math.copysign(TURN_SPEED, final_heading_error),
