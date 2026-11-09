@@ -199,8 +199,8 @@ class SlamNode(Node):
             self.ekf.update_state(it.v, it.w, it.dt, tags)
         except Exception as e:  # e.g. LinAlgError; never leave movement hanging
             self.get_logger().error(f"ekf update failed for seq={it.seq}: {e}")
-   
 
+        self.publish_pose(it.seq, 1.0) 
         self.robot_iter = None  # clear: tags are ignored until the next segment
 
     # ------------------------------------------------------------------
