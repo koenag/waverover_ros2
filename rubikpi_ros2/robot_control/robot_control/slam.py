@@ -6,17 +6,21 @@ this node calls directly, so there are no ekf topics.
   robot_movement_vw    (movement -> slam)
       [v, w, dt, start_window]
       Absolute ROS-clock times in seconds. Tags whose image stamp is in
-      [start_window] are accepted.
+      [start_window + SETTLE_TIME, start_window + SETTLE_TIME + DELAY]
+      are accepted.
 
   verified_pose_update (slam -> movement)
       [ok, x, y, theta, n_landmarks, id1, mx1, my1, ...]
       Published once at startup (the starting pose), then exactly once
       after each commit. Movement waits for it, so no sequence number.
-      ok = 1.0 normal, 0.0 if the EKF update failed (pose is then the
-      last known pose)
+      ok = 1.0 normal, 0.0 if an EKF step failed (pose is then the
+      last good pose)
 
-At end_of_delay, slam sends ONE batch to the EKF (v, w, dt, tags averaged
-per tag id; the tag dict may be empty) and publishes the result.
+Flow per iteration:
+  1. robot_movement_vw arrives -> predict ONCE with (v, w, dt).
+  2. Each camera frame in the window -> one correction step, applied
+     immediately as it arrives (one update per frame, not one per stop).
+  3. At window end + detector latency -> publish the pose.
 """
 
 import numpy as np
@@ -29,26 +33,30 @@ from tf2_msgs.msg import TFMessage
 from robot_control.kalman_filter_code import KalmanEKF
 
 STARTUP_POSE_DELAY = 2.0  # seconds after launch before the starting pose is sent
-DELAY = 0.4
-SETTLE_TIME = 0.3
+DELAY = 0.4               # length of the camera capture window
+SETTLE_TIME = 0.3         # wait for the rover to physically stop
+DETECTOR_LATENCY = 0.2    # extra time for late /tf messages from the window
 
 def stamp_to_sec(stamp):
     return stamp.sec + stamp.nanosec * 1e-9
 
 
 class RobotIter:
-    """Holds v, w and the tags seen during one stop-and-go iteration.
+    """One stop-and-go iteration.
 
     Created when movement_control publishes robot_movement_vw and set to
-    None once the pose has been published back. Tags are only collected
+    None once the pose has been published back. Frames are only applied
     while one exists."""
 
     def __init__(self, v, w, dt, start_window):
         self.v = v
         self.w = w
         self.dt = dt
-        self.start_window= start_window
-        self.tags = {}  # tag_id -> list of robot-frame [x, y] detections
+        self.start_window = start_window
+        self.ok = True             # False if any EKF step failed
+        self.seen_stamps = set()   # image stamps already applied
+        self.frames_used = 0
+        self.tag_ids = set()
 
 
 class SlamNode(Node):
@@ -81,7 +89,7 @@ class SlamNode(Node):
         self.create_subscription(
             Float64MultiArray, "robot_movement_vw", self.segment_callback, 10)
         self.create_subscription(
-            TFMessage, "/tf", self.tf_callback, 50)
+            TFMessage, "/tf", self.tf_callback, 100)
 
         self.pose_pub = self.create_publisher(
             Float64MultiArray, "verified_pose_update", 10)
@@ -112,35 +120,57 @@ class SlamNode(Node):
                      float(self.ekf.state[i + 1])]
         return flat
 
+    def safe_ekf_step(self, it, v, w, dt, tags, what):
+        """Run one EKF step; on failure restore the previous state."""
+        state, P = self.ekf.state.copy(), self.ekf.P.copy()
+        landmark_map = dict(self.ekf.landmark_map)
+        try:
+            self.ekf.update_state(v, w, dt, tags)
+        except Exception as e:  # e.g. LinAlgError; never leave movement hanging
+            self.ekf.state, self.ekf.P = state, P
+            self.ekf.landmark_map = landmark_map
+            it.ok = False
+            self.get_logger().error(f"ekf {what} failed: {e}")
+
     # ------------------------------------------------------------------
-    # Movement control -> slam: start an iteration
+    # Movement control -> slam: start an iteration and predict
     # ------------------------------------------------------------------
     def segment_callback(self, msg):
         d = msg.data
         if len(d) < 4:
-            self.get_logger().error("robot_movement_vw needs 5 values")
+            self.get_logger().error("robot_movement_vw needs 4 values")
             return
 
-        self.robot_iter = RobotIter(
+        it = RobotIter(
             v=float(d[0]), w=float(d[1]), dt=float(d[2]),
             start_window=float(d[3]),
         )
+        self.robot_iter = it
 
-        # At end_of_delay, send whatever we have (0 or more tags).
-        # (A timer, not a direct call: the delay is still in the future and
-        # tf_callback must keep running to collect tags meanwhile.)
+        # Predict NOW (robot is already stopped), so every frame that arrives
+        # afterwards corrects the post-motion pose. Empty dict = predict only.
+        self.safe_ekf_step(it, it.v, it.w, it.dt, {}, "predict")
+
+        # Publish after the capture window plus detector latency.
         self.commit_timer = self.cancel_timer(self.commit_timer)
-        wait = max(0.001, self.robot_iter.start_window + DELAY + SETTLE_TIME - self.now_sec())
-        self.commit_timer = self.create_timer(wait, self.invoke_ekf)
+        wait = max(0.001, it.start_window + SETTLE_TIME + DELAY
+                   + DETECTOR_LATENCY - self.now_sec())
+        self.commit_timer = self.create_timer(wait, self.commit)
 
     # ------------------------------------------------------------------
-    # Detector -> slam: collect tags while an iteration exists
+    # Detector -> slam: correct with each frame as it arrives
     # ------------------------------------------------------------------
     def tf_callback(self, msg):
         it = self.robot_iter
         if it is None:
             return
 
+        window_start = it.start_window + SETTLE_TIME
+        window_end = window_start + DELAY
+
+        # One /tf message can hold several tags from the same image.
+        # Group them by image stamp: one frame = one EKF correction.
+        frames = {}
         for stamped in msg.transforms:
             parent = stamped.header.frame_id.lstrip("/")
             child = stamped.child_frame_id.lstrip("/")
@@ -150,11 +180,12 @@ class SlamNode(Node):
             if not child.startswith("tag36h11:"):
                 continue
 
-            # Ignore tags captured before the segment stopped or after the
-            # delay ended (image stamp, not arrival time).
+            # Only images captured while settled and stationary.
             t_img = stamp_to_sec(stamped.header.stamp)
-            if not (it.start_window + SETTLE_TIME <= t_img <= it.start_window + SETTLE_TIME + DELAY):
+            if not (window_start <= t_img <= window_end):
                 continue
+            if t_img in it.seen_stamps:
+                continue  # this image was already applied
 
             try:
                 tag_id = int(child.split(":", 1)[1])
@@ -163,38 +194,38 @@ class SlamNode(Node):
 
             t = stamped.transform.translation
             tag_in_camera = np.array([t.x, t.y, t.z])
-            if not np.all(np.isfinite(tag_in_camera)):
-                continue
+            if not np.all(np.isfinite(tag_in_camera)) or tag_in_camera[2] <= 0:
+                continue  # tag must be in front of the camera
 
             tag_in_robot = (
                 self.camera_translation
                 + self.camera_rotation @ tag_in_camera
             )
-            it.tags.setdefault(tag_id, []).append(tag_in_robot[:2])
+            frames.setdefault(t_img, {})[tag_id] = tag_in_robot[:2].copy()
 
-    # At end of delay, send all collected tags and the burst's v, w to the EKF
-    def invoke_ekf(self):
+        # Apply each frame immediately, oldest first. dt = 0 -> correction only.
+        for t_img in sorted(frames):
+            tags = frames[t_img]
+            self.safe_ekf_step(it, 0.0, 0.0, 0.0, tags, "correction")
+            it.seen_stamps.add(t_img)
+            it.frames_used += 1
+            it.tag_ids.update(tags)
+
+    # ------------------------------------------------------------------
+    # End of window: hand the pose back to movement
+    # ------------------------------------------------------------------
+    def commit(self):
         self.commit_timer = self.cancel_timer(self.commit_timer)
         it = self.robot_iter
         if it is None:
             return
 
-        # One averaged measurement per tag (repeated frames of a static
-        # scene are correlated, so they are not applied separately).
-        tags = {
-            tag_id: np.mean(np.array(xy_list), axis=0)
-            for tag_id, xy_list in it.tags.items()
-        }
-
-        ok = 1.0
-        try:
-            self.ekf.update_state(it.v, it.w, it.dt, tags)
-        except Exception as e:  # e.g. LinAlgError; never leave movement hanging
-            self.get_logger().error(f"ekf update failed: {e}")
-            ok = 0.0
-
-        self.robot_iter = None  # clear: tags are ignored until the next segment
-        self.publish_pose(ok)
+        self.robot_iter = None  # tags are ignored until the next segment
+        x, y, theta = self.ekf.state[:3]
+        self.get_logger().info(
+            f"commit: frames={it.frames_used} tags={sorted(it.tag_ids)} "
+            f"pose=({x:.3f}, {y:.3f}, {np.degrees(theta):+.1f}deg)")
+        self.publish_pose(1.0 if it.ok else 0.0)
 
     # ------------------------------------------------------------------
     # slam -> movement control
