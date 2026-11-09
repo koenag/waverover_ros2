@@ -14,10 +14,10 @@ from .ekf_slam import EKFSLAM, MotionNoise, TagObservation
 
 # Calibrate these values separately
 MOTION_NOISE = MotionNoise(
-    q_d_per_m=0.001,
-    q_d_per_rad=0.0002,
+    q_d_per_m=0.005,
+    q_d_per_rad=0.001,
     q_theta_per_m=0.002,
-    q_theta_per_rad=0.003,
+    q_theta_per_rad=0.01,
 )
 
 # R IS a fixed 2x2 covariance for [tag_forward, tag_left], in meters squared.
