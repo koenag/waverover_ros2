@@ -1,274 +1,311 @@
-"""Joint planar EKF for a robot and uniquely identified AprilTag centers."""
+"""slam.py: coordinator between movement_control and the EKF.
 
-from copy import deepcopy
-from dataclasses import dataclass
-from math import cos, pi, sin
+The EKF is a plain Python class (kalman_filter_code.py, class KalmanEKF) that
+this node calls directly, so there are no ekf topics.
+
+  /slam/cmd_velocity   (movement -> slam)   TwistStamped
+      The effective [v, w] after motor saturation, repeated every control
+      tick as a heartbeat (including zeros). Slam predicts with the current
+      command all the time, so it also works with no tag in view.
+
+  /slam/pose           (slam -> movement)   Pose2D, every TIMER_PERIOD
+  /slam/segment_pose   (slam -> movement)   Pose2D, ONCE per stop, after the
+      settle + observation window, whether or not a tag was seen.
+  /slam/landmarks      (slam -> debugging)  [tag_id, x, y, ...]
+
+After a burst the robot stops. Camera frames captured in the stationary
+observation window [stop + SETTLE_TIME, stop + SETTLE_TIME + OBSERVATION_TIME]
+are applied to the EKF, one image at a time.
+"""
 
 import numpy as np
+import rclpy
+
+from geometry_msgs.msg import Pose2D, TwistStamped
+from rclpy.executors import ExternalShutdownException
+from rclpy.node import Node
+from std_msgs.msg import Float32MultiArray
+from tf2_msgs.msg import TFMessage
+
+from robot_control.kalman_filter_code import KalmanEKF
+
+# Timing values are initial choices; verify how long the rover actually coasts
+# and how long the camera detector takes to publish an image.
+TIMER_PERIOD = 0.05      # publish the continuous pose at 20 Hz
+MAX_PREDICT_STEP = 0.05  # keep individual motion integrations short
+SETTLE_TIME = 0.3        # wait for physical motion to stop
+OBSERVATION_TIME = 0.4   # accept stationary camera frames during this window
+COMMAND_TIMEOUT = 0.3    # heartbeat limit while a nonzero command is active
+
+ZERO_COMMAND = (0.0, 0.0)
 
 
-def wrap_angle(angle):
-    """Wrap a heading to [-pi, pi)."""
-    return (angle + pi) % (2 * pi) - pi
+def stamp_to_sec(stamp):
+    return stamp.sec + stamp.nanosec * 1e-9
 
 
-@dataclass(frozen=True)
-class MotionNoise:
-    """Provisional variance growth rates for distance and heading increments."""
+class RobotIter:
+    """The observation window after one burst.
 
-    # Translation and rotation can each add uncertainty to both distance and heading.
-    # These coefficients are variance growth rates per unit of motion.
-    q_d_per_m: float = 0.0025
-    q_theta_per_rad: float = 0.01
-    q_theta_per_m: float = 0.01
-    q_d_per_rad: float = 0.0004
+    Created when the robot stops and dropped as soon as it moves again.
+    Camera frames are only used while one exists."""
 
-    def __post_init__(self):
-        """Require finite, nonnegative growth rates."""
-        rates = tuple(vars(self).values())
-        if not np.all(np.isfinite(rates)) or min(rates) < 0:
-            raise ValueError('Motion noise rates must be finite and nonnegative')
+    def __init__(self, stop_time):
+        self.stop_time = stop_time
+        self.valid_from = stop_time + SETTLE_TIME
+        self.valid_until = self.valid_from + OBSERVATION_TIME
+        self.seen_frames = set()  # capture times already applied
+        self.published = False    # segment pose already sent
 
 
-@dataclass(frozen=True)
-class TagObservation:
-    """A tag's forward/left coordinates and covariance in the robot frame."""
+class SlamNode(Node):
+    def __init__(self):
+        super().__init__("slam_node")
 
-    tag_id: int
-    z: np.ndarray
-    R: np.ndarray
+        self.declare_parameter("camera_frame", "camera_frame")
+        self.camera_frame = self.get_parameter("camera_frame").value
 
+        # Camera origin in the robot frame and camera->robot rotation.
+        self.camera_translation = np.array([0.095, 0.0, 0.127])
+        roll = np.deg2rad(-80.0)
+        yaw = np.deg2rad(-90.0)
+        Rx = np.array([
+            [1.0, 0.0, 0.0],
+            [0.0, np.cos(roll), -np.sin(roll)],
+            [0.0, np.sin(roll),  np.cos(roll)],
+        ])
+        Rz = np.array([
+            [np.cos(yaw), -np.sin(yaw), 0.0],
+            [np.sin(yaw),  np.cos(yaw), 0.0],
+            [0.0, 0.0, 1.0],
+        ])
+        self.camera_rotation = Rz @ Rx
 
-@dataclass(frozen=True)
-class UpdateResult:
-    """Describe initialization, correction, or rejection of one observation."""
+        self.ekf = KalmanEKF()
+        self.ekf_time = None          # ROS time (s) the EKF is predicted up to
+        self.command = ZERO_COMMAND   # current effective (v, w)
+        self.last_command_time = None
+        self.failed = False
+        self.robot_iter = None
+        self.last_state_log = 0.0
 
-    accepted: bool
-    initialized: bool = False
-    residual: np.ndarray = None
+        self.create_subscription(
+            TwistStamped, "/slam/cmd_velocity", self.velocity_callback, 10)
+        self.create_subscription(TFMessage, "/tf", self.tf_callback, 100)
+        self.create_timer(TIMER_PERIOD, self.timer_callback)
 
+        self.pose_pub = self.create_publisher(Pose2D, "/slam/pose", 10)
+        self.segment_pose_pub = self.create_publisher(Pose2D, "/slam/segment_pose", 10)
+        self.landmark_pub = self.create_publisher(
+            Float32MultiArray, "/slam/landmarks", 10)
 
-def motion_model(state, v, omega, dt):
-    """Integrate the robot pose with midpoint heading; landmarks stay fixed."""
-    distance = v * dt
-    # Convert angular velocity to a heading increment for this interval.
-    turn = omega * dt
-    # Approximate the arc using the heading halfway through the turn.
-    midpoint = state[2] + turn / 2
-    # Only the first three entries describe the moving robot. The remaining
-    # entries are tag centers in map coordinates and stay fixed in prediction.
-    result = state.copy()
-    result[0] += distance * cos(midpoint)
-    result[1] += distance * sin(midpoint)
-    result[2] = wrap_angle(state[2] + turn)
-    return result
+        self.get_logger().info("slam_node ready")
 
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def now_sec(self):
+        """ROS time in seconds, or None if the clock isn't running or jumped back."""
+        t = self.get_clock().now().nanoseconds * 1e-9
+        if t <= 0:
+            return None  # in simulation, /clock may not have started
+        if self.ekf_time is not None and t < self.ekf_time:
+            self.fail("ROS clock moved backwards")
+            return None
+        if self.ekf_time is None:
+            self.ekf_time = t
+        return t
 
-def motion_jacobians(state, v, omega, dt):
-    """Linearize motion with respect to state and the two motion increments."""
-    distance = v * dt
-    midpoint = state[2] + omega * dt / 2
-    c, s = cos(midpoint), sin(midpoint)
-    # F maps old state errors to new state errors. Only the dependence of
-    # robot x and y on the old heading changes this identity matrix.
-    F = np.eye(len(state))
-    F[:2, 2] = (-distance * s, distance * c)
-    # G maps distance and turn errors into pose errors. The turn column
-    # also affects x and y through the midpoint heading.
-    G = np.zeros((len(state), 2))
-    G[:3] = ((c, -distance * s / 2), (s, distance * c / 2), (0, 1))
-    return F, G
+    def fail(self, reason):
+        """Stop publishing potentially inaccurate poses if motion is lost."""
+        if not self.failed:
+            self.failed = True
+            self.get_logger().error(
+                f"SLAM prediction is unreliable ({reason}); stop rover and restart SLAM.")
 
+    def landmarks_flat(self):
+        """[id1, mx1, my1, id2, ...] from the EKF state."""
+        flat = []
+        for tag_id, i in self.ekf.landmark_map.items():
+            flat += [float(tag_id), float(self.ekf.state[i]),
+                     float(self.ekf.state[i + 1])]
+        return flat
 
-class EKFSLAM:
-    """Estimate the robot pose and landmarks in a shared map frame."""
+    # ------------------------------------------------------------------
+    # EKF
+    # ------------------------------------------------------------------
+    def invoke_ekf(self, v, w, dt, tags):
+        """One EKF update: predict over dt, then apply the tags (either may be empty)."""
+        try:
+            self.ekf.update_state(v, w, dt, tags)
+        except Exception as e:  # e.g. LinAlgError
+            self.fail(f"ekf update failed: {e}")
 
-    def __init__(self, initial_pose=(0., 0., 0.), initial_covariance=None, noise_config=None):
-        """Anchor the map at the initial pose, with zero uncertainty by default."""
-        # Start with [robot_x, robot_y, robot_yaw]. Append a pair of coordinates
-        # for each new tag, with the covariance entries in the same order.
-        self.state = np.array(initial_pose, dtype=float, copy=True)
-        if self.state.shape != (3,) or not np.all(np.isfinite(self.state)):
-            raise ValueError('Initial pose must contain three finite values')
-        self.state[2] = wrap_angle(self.state[2])
+    def predict_to(self, timestamp):
+        """Advance the EKF to timestamp using the active command.
 
-        # Zero covariance anchors the startup pose as the map reference. Motion
-        # and measurement noise determine uncertainty as the state evolves.
-        self.P = np.zeros((3, 3))
-        if initial_covariance is not None:
-            # Accept a custom covariance only if it is a valid planar pose covariance.
-            covariance = np.asarray(initial_covariance, dtype=float)
-            if (
-                covariance.shape != (3, 3)
-                or not np.all(np.isfinite(covariance))
-                or not np.allclose(covariance, covariance.T)
-            ):
-                raise ValueError('Initial covariance must be finite, symmetric, and 3x3')
-            covariance = (covariance + covariance.T) / 2
-            if np.min(np.linalg.eigvalsh(covariance)) < -1e-12:
-                raise ValueError('Initial covariance must be positive semidefinite')
-            self.P = covariance
-
-        # Map each detector ID to the index of its first coordinate. IDs can
-        # arrive in any order and need not be consecutive.
-        self.landmark_indices = {}
-        self.noise = MotionNoise() if noise_config is None else noise_config
-
-    def predict(self, v, omega, dt):
-        """Advance the joint estimate under one constant command."""
-        # Check the time and command before touching the filter state.
-        if not np.all(np.isfinite((v, omega, dt))) or dt < 0:
-            raise ValueError('Prediction requires finite inputs and nonnegative elapsed time')
-        # Events with equal timestamps share a state with no intervening motion.
-        if dt == 0:
+        Runs even when no tag has ever been seen. The real elapsed time is
+        integrated (not the timer period), in short steps for accuracy."""
+        if timestamp < self.ekf_time:
+            self.fail("attempted to predict backward in time")
             return
 
-        # Increment-dependent noise gives zero added uncertainty while stationary.
-        distance, turn = abs(v * dt), abs(omega * dt)
-        Q = np.diag((
-            self.noise.q_d_per_m * distance + self.noise.q_d_per_rad * turn,
-            self.noise.q_theta_per_m * distance + self.noise.q_theta_per_rad * turn,
-        ))
-        # Linearize about the old pose. F carries existing uncertainty and
-        # correlations forward. G adds uncertainty from this motion interval.
-        F, G = motion_jacobians(self.state, v, omega, dt)
-        covariance = F @ self.P @ F.T + G @ Q @ G.T
-        # Advance the mean, then symmetrize covariance to remove roundoff drift.
-        self.state = motion_model(self.state, v, omega, dt)
-        self.P = (covariance + covariance.T) / 2
+        while self.ekf_time < timestamp and not self.failed:
+            step = min(timestamp - self.ekf_time, MAX_PREDICT_STEP)
+            self.invoke_ekf(*self.command, step, {})
+            self.ekf_time = min(self.ekf_time + step, timestamp)
 
-    def get_robot_pose(self):
-        """Return the robot's x, y, and yaw."""
-        return self.state[:3].copy()
+    # ------------------------------------------------------------------
+    # Movement control -> slam: the command heartbeat
+    # ------------------------------------------------------------------
+    def velocity_callback(self, msg):
+        """Update the command, integrating the OLD command before switching."""
+        if self.failed:
+            return
+        now = self.now_sec()
+        if now is None:
+            return
 
-    def get_robot_covariance(self):
-        """Return the robot's planar marginal covariance."""
-        return self.P[:3, :3].copy()
+        # Movement publishes the effective v, w AFTER motor saturation. The
+        # receipt time approximates the moment the motors switched.
+        new_command = (msg.twist.linear.x, msg.twist.angular.z)
+        if not all(np.isfinite(new_command)):
+            self.fail("invalid velocity command")
+            return
 
-    def get_landmarks(self):
-        """Return landmark means and marginal covariances by tag ID."""
-        return {
-            # Return the position and its own 2x2 covariance for each tag.
-            # The full matrix and its cross-correlations stay inside the filter.
-            tag_id: (self.state[i:i + 2].copy(), self.P[i:i + 2, i:i + 2].copy())
-            for tag_id, i in self.landmark_indices.items()
-        }
+        self.predict_to(now)
+        if self.failed:
+            return
 
-    def copy(self):
-        """Return an independent estimate for temporary forward prediction."""
-        # Give the ROS node independent arrays and tag indices so live-pose
-        # extrapolation leaves the saved filter untouched.
-        return deepcopy(self)
+        was_moving = self.command != ZERO_COMMAND
+        is_moving = new_command != ZERO_COMMAND
+        self.command = new_command
+        self.last_command_time = now  # repeated commands are heartbeats
 
-    def measurement_model(self, tag_id):
-        """Predict the tag center in robot-relative forward/left coordinates."""
-        i = self.landmark_indices[tag_id]
-        # Find the displacement in map axes, then rotate by minus the robot yaw
-        # to express it in forward/left axes.
-        dx, dy = self.state[i:i + 2] - self.state[:2]
-        c, s = cos(self.state[2]), sin(self.state[2])
-        return np.array((c * dx + s * dy, -s * dx + c * dy))
+        if is_moving and not was_moving:
+            self.robot_iter = None  # a new burst ends any earlier window
+        elif was_moving and not is_moving:
+            # ONE window per burst. Repeated zero commands don't restart it.
+            self.robot_iter = RobotIter(now)
 
-    def measurement_jacobian(self, tag_id):
-        """Linearize the predicted measurement at the current estimate."""
-        i = self.landmark_indices[tag_id]
-        c, s = cos(self.state[2]), sin(self.state[2])
-        forward, left = self.measurement_model(tag_id)
-        # Only the robot and the observed tag enter this model. The heading
-        # derivatives are [left, -forward]. Other columns stay zero.
-        H = np.zeros((2, len(self.state)))
-        H[:, :3] = ((-c, -s, left), (s, -c, -forward))
-        H[:, i:i + 2] = ((c, s), (-s, c))
-        return H
+    # ------------------------------------------------------------------
+    # Detector -> slam: use tags only inside the observation window
+    # ------------------------------------------------------------------
+    def tf_callback(self, msg):
+        it = self.robot_iter
+        if self.failed or it is None or it.published:
+            return
+        now = self.now_sec()
+        if now is None or not it.valid_from <= now <= it.valid_until:
+            return
 
-    def _initialize_landmark(self, tag_id, z, R):
-        # Rotate the observation into the map and propagate pose uncertainty.
-        c, s = cos(self.state[2]), sin(self.state[2])
-        rotation = np.array(((c, -s), (s, c)))
-        offset = rotation @ z
-        # J maps errors in the existing state into the new tag position.
-        # Only the robot pose enters the coordinate transform directly.
-        J = np.zeros((2, len(self.state)))
-        J[:, :3] = ((1, 0, -offset[1]), (0, 1, offset[0]))
+        # /tf may carry several tags from the SAME image. Group by capture
+        # stamp so each image is applied once, even if /tf republishes it.
+        frames = {}
+        for stamped in msg.transforms:
+            parent = stamped.header.frame_id.lstrip("/")
+            child = stamped.child_frame_id.lstrip("/")
 
-        # The new tag inherits correlations with every existing state entry.
-        cross = self.P @ J.T
-        # Add the new tag uncertainty from both robot pose and camera noise.
-        # Rotate the camera measurement covariance from robot to map axes.
-        marginal = J @ cross + rotation @ R @ rotation.T
-        # Append the tag block and its correlations without replacing the
-        # covariance of the existing state.
-        covariance = np.block([[self.P, cross], [cross.T, marginal]])
-        i = len(self.state)
-        self.state = np.concatenate((self.state, self.state[:2] + offset))
-        self.P = (covariance + covariance.T) / 2
-        self.landmark_indices[tag_id] = i
-
-    def _update_landmark(self, tag_id, z, R):
-        # The innovation is Cartesian, so only the updated heading is wrapped.
-        residual = z - self.measurement_model(tag_id)
-        H = self.measurement_jacobian(tag_id)
-        # Project uncertainty into measurement space, add sensor noise, then
-        # solve for the Kalman gain without forming a matrix inverse.
-        PHt = self.P @ H.T
-        innovation_covariance = H @ PHt + R
-        gain = np.linalg.solve(innovation_covariance, PHt.T).T
-        # The gain covers the entire state. Correlated tags can move even if
-        # they were absent from this camera frame.
-        state = self.state + gain @ residual
-        state[2] = wrap_angle(state[2])
-
-        # Joseph form preserves covariance symmetry and numerical stability.
-        A = np.eye(len(state)) - gain @ H
-        covariance = A @ self.P @ A.T + gain @ R @ gain.T
-        self.state = state
-        self.P = (covariance + covariance.T) / 2
-        return UpdateResult(accepted=True, residual=residual)
-
-    def process_observation(self, tag_id, z, R):
-        """Validate an observation, then initialize or correct its landmark."""
-        try:
-            # Convert to arrays so shape and numeric checks run before any update.
-            z, R = np.asarray(z, dtype=float), np.asarray(R, dtype=float)
-        except (ValueError, TypeError, OverflowError):
-            return UpdateResult(accepted=False)
-        if (
-            not isinstance(tag_id, (int, np.integer))
-            or tag_id < 0
-            or z.shape != (2,)
-            or R.shape != (2, 2)
-            or not np.all(np.isfinite(z))
-            or not np.all(np.isfinite(R))
-            or not np.allclose(R, R.T)
-        ):
-            return UpdateResult(accepted=False)
-
-        # Cholesky verifies that R is positive definite. With a valid state
-        # covariance, this keeps the innovation system nonsingular.
-        R = (R + R.T) / 2
-        try:
-            np.linalg.cholesky(R)
-        except np.linalg.LinAlgError:
-            return UpdateResult(accepted=False)
-
-        # Reobservations correct the map. The first sighting initializes a tag
-        # and its covariance without using the same observation twice.
-        if tag_id in self.landmark_indices:
-            return self._update_landmark(tag_id, z, R)
-        self._initialize_landmark(tag_id, z, R)
-        return UpdateResult(accepted=True, initialized=True)
-
-    def process_observations(self, observations):
-        """Apply at most one valid observation per tag from a camera frame."""
-        results = []
-        seen = set()
-        # Use a consistent tag order for sequential updates. Mark an ID seen
-        # only after accepting its observation.
-        for obs in sorted(observations, key=lambda observation: observation.tag_id):
-            if obs.tag_id in seen:
+            if parent != self.camera_frame:
                 continue
-            result = self.process_observation(obs.tag_id, obs.z, obs.R)
-            if result.accepted:
-                seen.add(obs.tag_id)
-            results.append(result)
-        return results
+            if not child.startswith("tag36h11:"):
+                continue
+            try:
+                tag_id = int(child.split(":", 1)[1])
+            except ValueError:
+                continue
+
+            # The frame must have been CAPTURED while stationary (processing
+            # may lag, so arrival time alone isn't enough).
+            capture_time = stamp_to_sec(stamped.header.stamp)
+            if not it.valid_from <= capture_time <= now:
+                continue
+            if capture_time in it.seen_frames:
+                continue
+
+            t = stamped.transform.translation
+            tag_in_camera = np.array([t.x, t.y, t.z])
+            if not np.all(np.isfinite(tag_in_camera)) or tag_in_camera[2] <= 0:
+                continue
+
+            tag_in_robot = (
+                self.camera_translation
+                + self.camera_rotation @ tag_in_camera
+            )
+            if not np.all(np.isfinite(tag_in_robot)):
+                continue
+
+            frames.setdefault(capture_time, {})[tag_id] = tag_in_robot[:2]
+
+        # The rover is stationary, so a valid image can be applied right away.
+        for capture_time, tags in sorted(frames.items()):
+            self.predict_to(now)
+            if self.failed:
+                return
+            self.invoke_ekf(0.0, 0.0, 0.0, tags)
+            it.seen_frames.add(capture_time)
+
+    # ------------------------------------------------------------------
+    # Timer: predict, publish the pose, and send the segment pose once
+    # ------------------------------------------------------------------
+    def timer_callback(self):
+        if self.failed:
+            return
+        now = self.now_sec()
+        if now is None:
+            return
+
+        # Missing heartbeats while moving mean the true motion is unknown;
+        # don't silently assume the motors stopped.
+        if (self.command != ZERO_COMMAND and self.last_command_time is not None
+                and now - self.last_command_time > COMMAND_TIMEOUT):
+            self.fail("missing velocity command heartbeat")
+            return
+
+        self.predict_to(now)
+        if self.failed:
+            return
+
+        if now - self.last_state_log >= 1.0:
+            self.get_logger().info(f"EKF state: {np.round(self.ekf.state, 3)}")
+            self.last_state_log = now
+
+        self.publish_pose(self.pose_pub)
+
+        # Once per stop, after the observation window, even with zero tags.
+        it = self.robot_iter
+        if (self.command == ZERO_COMMAND and it is not None
+                and not it.published and now >= it.valid_until):
+            it.published = True
+            self.publish_pose(self.segment_pose_pub)
+
+        self.landmark_pub.publish(Float32MultiArray(data=self.landmarks_flat()))
+
+    # ------------------------------------------------------------------
+    # slam -> movement control
+    # ------------------------------------------------------------------
+    def publish_pose(self, publisher):
+        """Publish the robot pose (x, y, theta); covariance stays in the EKF."""
+        x, y, theta = self.ekf.state[:3]
+        msg = Pose2D()
+        msg.x, msg.y, msg.theta = float(x), float(y), float(theta)
+        publisher.publish(msg)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = None
+    try:
+        node = SlamNode()
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
