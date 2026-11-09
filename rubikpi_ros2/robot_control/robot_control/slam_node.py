@@ -67,6 +67,9 @@ class SLAMNode(Node):
         self.segment_ready = False
         self.seen_frames = set()
 
+        # === LOG ADDED: State vector logging timer ===
+        self.last_state_log = 0
+
 
         # Transform from camera optical coordinates to rover coordinates.
         # Robot axes: x forward, y left.  Keep the original calibrated values.
@@ -147,6 +150,17 @@ class SLAMNode(Node):
         self.predict_to(now)
         if self.failed:
             return
+
+        # === LOG ADDED: Print EKF state vector once per second ===
+        if now - self.last_state_log >= NANOSECONDS:
+            self.get_logger().info(
+                f"SLAM | EKF STATE: {np.round(self.ekf.state, 3)}"
+            )
+            self.last_state_log = now
+        # === END LOG ===
+
+        # Publish a live estimate at every timer tick, with or without tags.
+        self.publish_pose(self.pose_pub)
 
         was_moving = self.command != ZERO_COMMAND
         is_moving = new_command != ZERO_COMMAND
