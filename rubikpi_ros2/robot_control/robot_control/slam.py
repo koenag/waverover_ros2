@@ -35,7 +35,7 @@ from robot_control.kalman_filter_code import KalmanEKF
 STARTUP_POSE_DELAY = 2.0  # seconds after launch before the starting pose is sent
 DELAY = 0.4               # length of the camera capture window
 SETTLE_TIME = 0.3         # wait for the rover to physically stop
-DETECTOR_LATENCY = 0.2    # extra time for late /tf messages from the window
+DETECTOR_LATENCY = 0.0    # extra time for late /tf messages from the window
 
 def stamp_to_sec(stamp):
     return stamp.sec + stamp.nanosec * 1e-9
