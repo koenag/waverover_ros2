@@ -242,6 +242,7 @@ class MovementController(Node):
                 self.pose_time = time.monotonic()
 
                 if self.waypoint_index >= len(self.waypoints):
+                    self.waypoint_index=0
                     self.get_logger().info('[DONE] All waypoints completed')
             else:
                 self.create_movement(
