@@ -145,8 +145,8 @@ class MovementController(Node):
         actual_speed = abs(actual_linear if linear_speed != 0 else actual_angular)
         duration = amount / max(actual_speed, 1e-6)
 
-        self.movement = (actual_linear, actual_angular, time.monotonic(),
-                         duration, description)
+        self.movement = (linear_speed, angular_speed, actual_linear, actual_angular,
+                         time.monotonic(), duration, description)
 
         self.get_logger().info(
             f'[MOVE START] {description} | '
@@ -178,11 +178,11 @@ class MovementController(Node):
 
         # In a burst: keep driving, then stop and report it to slam
         if self.movement:
-            linear, angular, start, duration, description = self.movement
+            requested_linear, requested_angular, linear, angular, start, duration, description = self.movement
 
-            # Round to the nearest control tick instead of always overshooting
-            if now - start < duration - CALLBACK_FREQUENCY / 2:
-                self.command(linear, angular)
+            # Match the working controller: run until the full duration elapses.
+            if now - start < duration:
+                self.command(requested_linear, requested_angular)
                 return
 
             self.command(0.0, 0.0)
