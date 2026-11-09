@@ -23,8 +23,8 @@ MOTION_NOISE = MotionNoise(
 # R IS a fixed 2x2 covariance for [tag_forward, tag_left], in meters squared.
 # Replace with the matrix computed from stationary AprilTag measurements.
 MEASUREMENT_R = np.array([
-    [0.0025, 0.0],
-    [0.0, 0.0025],
+    [0.01, 0.0],
+    [0.0, 0.01],
 ])
 
 # Timing values are initial choices; verify how long the rover actually coasts
