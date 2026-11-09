@@ -24,7 +24,7 @@ from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
 from tf2_msgs.msg import TFMessage
 
-from kalman_filter_code import KalmanSLAM
+from kalman_filter_code import KalmanEKF
 
 
 def stamp_to_sec(stamp):
@@ -71,7 +71,7 @@ class SlamNode(Node):
         ])
         self.camera_rotation = Rz @ Rx
 
-        self.ekf = KalmanSLAM()
+        self.ekf = KalmanEKF()
         self.robot_iter = None
         self.commit_timer = None
 
@@ -128,13 +128,6 @@ class SlamNode(Node):
             self.get_logger().error("robot_movement_vw needs 6 values")
             return
 
-        # Do not drop the previous segment's motion: flush it to the EKF now.
-        if self.robot_iter is not None:
-            self.get_logger().warn(
-                f"new segment {int(d[0])} before iteration "
-                f"{self.robot_iter.seq} was committed; committing it now")
-            self.commit_callback()
-
         self.robot_iter = RobotIter(
             seq=int(d[0]), v=float(d[1]), w=float(d[2]), dt=float(d[3]),
             stop_time=float(d[4]),
@@ -143,7 +136,8 @@ class SlamNode(Node):
 
         # At end_of_delay, send whatever we have (0 or more tags).
         wait = max(0.001, self.robot_iter.end_of_delay - self.now_sec())
-        self.commit_timer = self.create_timer(wait, self.commit_callback)
+        # call invoke_ekf only after the delay
+        self.commit_timer = self.create_timer(wait, self.invoke_ekf) # why do you need this why can you just call commit_calback as a funciton
 
     # ------------------------------------------------------------------
     # Detector -> slam: collect tags while an iteration exists
@@ -186,10 +180,9 @@ class SlamNode(Node):
             it.tags.setdefault(tag_id, []).append(tag_in_robot[:2])
             self.n_tags_accepted += 1
 
-    # ------------------------------------------------------------------
-    # End of delay: send ONE batch to the EKF, publish the result
-    # ------------------------------------------------------------------
-    def commit_callback(self):
+    #At End of Delay, send all the collected tags and the current robot v,w to EKF
+    def invoke_ekf(self):
+        """ """
         self.commit_timer = self.cancel_timer(self.commit_timer)
         it = self.robot_iter
         if it is None:
@@ -201,21 +194,20 @@ class SlamNode(Node):
             tag_id: np.mean(np.array(xy_list), axis=0)
             for tag_id, xy_list in it.tags.items()
         }
-
-        ok = 1.0
+  
         try:
             self.ekf.update_state(it.v, it.w, it.dt, tags)
         except Exception as e:  # e.g. LinAlgError; never leave movement hanging
             self.get_logger().error(f"ekf update failed for seq={it.seq}: {e}")
-            ok = 0.0
+   
 
-        self.publish_pose(it.seq, ok)
         self.robot_iter = None  # clear: tags are ignored until the next segment
 
     # ------------------------------------------------------------------
     # slam -> movement control
     # ------------------------------------------------------------------
     def publish_pose(self, seq, ok):
+        """Send the state vector (landmarks and robot pose) to movement control"""
         pose = self.ekf.state[:3]
         landmarks = self.landmarks_flat()
         out = Float64MultiArray()

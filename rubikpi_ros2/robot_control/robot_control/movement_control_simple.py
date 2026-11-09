@@ -101,15 +101,19 @@ class MovementController(Node):
         d = msg.data
         seq, ok = int(d[0]), d[1]
         if not self.waiting_slam or seq != self.seq_num:
+            self.get_logger().warning(f"Robot pose was sent at {seq}, but now is at {self.seq_num}. Ignoring EKF localization")
             return
+        
         if ok:
             self.pose = (d[2], d[3], d[4])
         else:
             self.get_logger().warn('slam update failed; keeping last pose')
-        n = int(d[5])
-        self.landmarks = {int(d[6 + 3*k]): (d[7 + 3*k], d[8 + 3*k]) for k in range(n)}
-        self.waiting_slam = False            # lets the next burst start
-        self.pose_time = time.monotonic()    # marks the pose as new for the planner
+
+        num_detected_landmarks = int(d[5])
+        self.landmarks = {int(d[6 + 3*k]): (d[7 + 3*k], d[8 + 3*k]) for k in range(num_detected_landmarks)}
+        self.waiting_slam = False            # True if we are in the delay period waiting for SLAM to give a localization else if we are moving is False
+        self.get_logger().warning(f"Got a pose from SLAM {self.pose}. Will allow robot movement now")
+        self.pose_time = time.monotonic()    # time when last pose came in is now
 
     def command(self, linear_speed, angular_speed):
         left, right = np.linalg.solve(
@@ -127,6 +131,8 @@ class MovementController(Node):
         return linear_speed / scale, angular_speed / scale
 
     def create_movement(self, linear_speed, angular_speed, amount, starting_pose, movement_description):
+
+        # publish the v,w before move callback starts the distance checking so this is the true start time of the motion
         actual_linear, actual_angular = self.command(
             linear_speed, angular_speed)
 
@@ -136,8 +142,8 @@ class MovementController(Node):
         duration = amount / max(actual_speed, 1e-6)
         movement_start_time = time.monotonic()
         self.movement = (
-            actual_linear, angular_speed, actual_angular, movement_start_time,
-            duration, starting_pose, movement_description)
+            actual_linear, actual_angular, movement_start_time,
+            duration, movement_description)
 
         # LOG: Movement command and calibration output
         left, right = np.linalg.solve(
@@ -165,20 +171,26 @@ class MovementController(Node):
         '''
         now = time.monotonic()
 
+        # Debug check make sure if we have a self.movement we are not delaying its start time
+        if self.waiting_slam: 
+            assert not self.movement 
+        else:
+            assert self.movement is not None
+
         # Startup wait / pause after reaching a waypoint
         if self.pause_until and now < self.pause_until:
             self.command(0.0, 0.0)
             return
 
-        # Stopped after a burst: wait until slam replies (see update_pose)
+        # Stopped after a burst: wait until slam replies (update_pose sets waiting to false)
         if self.waiting_slam:
             self.command(0.0, 0.0)
             return
 
         # In a burst: keep driving, then stop and report it to slam
         if self.movement:
-            (linear_speed, angular_speed, angular_rotation, movement_start_time,
-             duration, starting_pose, movement_description) = self.movement
+            (linear_speed, angular_rotation, movement_start_time,
+             duration, movement_description) = self.movement
 
             if now < movement_start_time + duration:
                 self.command(linear_speed, angular_rotation)

@@ -38,19 +38,6 @@ class KalmanEKF:
 
         return pred, F, G
 
-    # Predict, then correct with any tags. tags: {tag_id: np.array([x, y])}
-    # in the ROBOT frame. An empty dict means a prediction-only update.
-    def update_state(self, v, w, dt, tags):
-        self.state, F, G = self.pred_state(self.state, v, w, dt)
-        self.P = self.calc_P(F, G, self.P, self.Q)
-
-        for tag_id, z in tags.items():
-            if tag_id not in self.landmark_map:
-                self.add_landmark(tag_id, z)
-            else:
-                predicted_z, H = self.z_pred(tag_id)
-                self.kalman_update(z, predicted_z, H)
-
     # Propagate the covariance through the motion model.
     def calc_P(self, F, G, P, M):
         predicted_P = F @ P @ F.T + G @ M @ G.T
@@ -66,6 +53,7 @@ class KalmanEKF:
             [s,  c],
         ])
 
+        # add the distance between robot and tag to the currente estimated pose of the robot
         landmark = np.array([x, y]) + rotation @ z
         n = len(self.state)
 
@@ -135,3 +123,16 @@ class KalmanEKF:
         I_KH = np.eye(len(self.state)) - K @ H
         self.P = I_KH @ self.P @ I_KH.T + K @ self.R @ K.T
         self.P = 0.5 * (self.P + self.P.T)
+
+    # Predict, then correct with any tags. tags: {tag_id: np.array([x, y])}
+    # in the ROBOT frame. An empty dict means a prediction-only update.
+    def update_state(self, v, w, dt, tags):
+        self.state, F, G = self.pred_state(self.state, v, w, dt)
+        self.P = self.calc_P(F, G, self.P, self.Q)
+
+        for tag_id, z in tags.items():
+            if tag_id not in self.landmark_map:
+                self.add_landmark(tag_id, z)
+            else:
+                predicted_z, H = self.z_pred(tag_id)
+                self.kalman_update(z, predicted_z, H)
