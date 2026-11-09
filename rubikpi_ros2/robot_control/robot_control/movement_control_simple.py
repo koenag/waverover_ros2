@@ -75,6 +75,7 @@ class MovementController(Node):
         self.movement = None
         self.pause_until = 0.0
         self.finished = False
+        self.position_reached = False
 
         self.total_linear_distance_travelled = 0.0
         self.total_angular_distance_travelled = 0.0
@@ -198,45 +199,78 @@ class MovementController(Node):
             self.command(0.0, 0.0)
             return
 
-        # 6. Keep the ORIGINAL navigation decisions: turn toward the waypoint,
-        #    drive a short distance, then correct final heading at the waypoint.
+        # 5. Calculate the distance and direction to the current waypoint.
         x, y, theta = self.pose
         goal_x, goal_y, goal_theta = self.waypoints[self.waypoint_index]
 
-        dx, dy = goal_x - x, goal_y - y
+        dx = goal_x - x
+        dy = goal_y - y
+
         distance_remaining = math.hypot(dx, dy)
+
+        # Heading needed to travel toward the waypoint.
         heading_error = wrap_angle(math.atan2(dy, dx) - theta)
+
+        # Final heading requested by the waypoint file.
         final_heading_error = wrap_angle(goal_theta - theta)
 
         self.get_logger().info(
             f'[POSE] WP {self.waypoint_index} | '
             f'robot=({x:.3f}, {y:.3f}, {math.degrees(theta):+.1f}deg) | '
             f'goal=({goal_x:.3f}, {goal_y:.3f}, '
-            f'{math.degrees(goal_theta):+.1f}deg)')
+            f'{math.degrees(goal_theta):+.1f}deg)'
+        )
 
+        # Once we reach the waypoint's position, remember it.
+        # This prevents a later EKF correction from making
+        # the controller turn around and revisit the same corner.
         if distance_remaining <= POSITION_TOLERANCE:
+            self.position_reached = True
+
+        if self.position_reached:
+            # Position has already been reached.
+            # Only the final heading needs correction.
             if abs(final_heading_error) <= HEADING_TOLERANCE:
-                # Position and final heading both satisfy the tolerances.
-                self.get_logger().info(f'[WAYPOINT REACHED] {self.waypoint_index}')
-                # Loop around to the first waypoint if the last one is reached.
+                self.get_logger().info(
+                    f'[WAYPOINT REACHED] {self.waypoint_index}'
+                )
+
+                # Wrap around to continuously traverse the square.
                 self.waypoint_index = (
                     self.waypoint_index + 1
                 ) % len(self.waypoints)
-                self.pause_until = now + WAYPOINT_PAUSE
+
+                # Reset the position latch for the next waypoint.
+                self.position_reached = False
+
             else:
-                # Position reached, but final orientation needs correction.
-                self.create_movement(0.0,
-                                     math.copysign(TURN_SPEED, final_heading_error),
-                                     abs(final_heading_error), 'FINAL TURN')
+                # Rotate in place to match the waypoint heading.
+                self.create_movement(
+                    0.0,
+                    math.copysign(TURN_SPEED, final_heading_error),
+                    abs(final_heading_error),
+                    'FINAL TURN'
+                )
+
         elif abs(heading_error) > HEADING_TOLERANCE:
-            # Turn in place until facing approximately toward the next waypoint.
-            self.create_movement(0.0,
-                                 math.copysign(TURN_SPEED, heading_error),
-                                 abs(heading_error), 'TURN')
+            # Not at the waypoint, and not facing toward it.
+            # Rotate before driving.
+            self.create_movement(
+                0.0,
+                math.copysign(TURN_SPEED, heading_error),
+                abs(heading_error),
+                'TURN'
+            )
+
         else:
-            # Drive at most 0.20 m before waiting for another EKF segment pose.
-            self.create_movement(DRIVE_SPEED, 0.0,
-                                 min(distance_remaining, MAX_DRIVE_SEGMENT), 'DRIVE')
+            # Facing approximately toward the waypoint.
+            # Drive a short distance, then stop for EKF estimation.
+            self.create_movement(
+                DRIVE_SPEED,
+                0.0,
+                min(distance_remaining, MAX_DRIVE_SEGMENT),
+                'DRIVE'
+            )
 
 
 def main(args=None):
