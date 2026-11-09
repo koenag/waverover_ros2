@@ -1,7 +1,7 @@
 """slam.py: coordinator between movement_control and the EKF.
 
-The EKF is a plain Python class (ekf.py, class KalmanEKF) that this node
-calls directly, so there are no ekf topics.
+The EKF is a plain Python class (kalman_filter_code.py, class KalmanEKF) that
+this node calls directly, so there are no ekf topics.
 
   robot_movement_vw    (movement -> slam)
       [seq, v, w, dt, stop_time, end_of_delay]
@@ -10,6 +10,8 @@ calls directly, so there are no ekf topics.
 
   verified_pose_update (slam -> movement)
       [seq, ok, x, y, theta, n_landmarks, id1, mx1, my1, ...]
+      Published continuously (POSE_PUBLISH_PERIOD) with the seq of the last
+      committed segment (0 before any), and immediately after each commit.
       ok = 1.0 normal, 0.0 if the EKF update failed (pose is then the
       last known pose)
 
@@ -25,6 +27,8 @@ from std_msgs.msg import Float64MultiArray
 from tf2_msgs.msg import TFMessage
 
 from robot_control.kalman_filter_code import KalmanEKF
+
+POSE_PUBLISH_PERIOD = 0.5  # seconds between continuous pose publications
 
 
 def stamp_to_sec(stamp):
@@ -74,10 +78,7 @@ class SlamNode(Node):
         self.ekf = KalmanEKF()
         self.robot_iter = None
         self.commit_timer = None
-
-        # Diagnostics
-        self.n_tags_accepted = 0
-        self.n_tags_rejected_time = 0
+        self.last_seq = 0  # seq of the last committed segment (0 = none yet)
 
         self.create_subscription(
             Float64MultiArray, "robot_movement_vw", self.segment_callback, 10)
@@ -87,8 +88,9 @@ class SlamNode(Node):
         self.pose_pub = self.create_publisher(
             Float64MultiArray, "verified_pose_update", 10)
 
-        # Initial pose (origin) so movement_control has something to start from.
-        self.init_timer = self.create_timer(2.0, self.publish_initial_pose)
+        # Always publish the current pose so movement_control never has to
+        # assume where the robot is.
+        self.create_timer(POSE_PUBLISH_PERIOD, self.publish_current_pose)
 
         self.get_logger().info("slam_node ready")
 
@@ -113,13 +115,6 @@ class SlamNode(Node):
         return flat
 
     # ------------------------------------------------------------------
-    # Startup
-    # ------------------------------------------------------------------
-    def publish_initial_pose(self):
-        self.init_timer = self.cancel_timer(self.init_timer)
-        self.publish_pose(seq=0, ok=1.0)
-
-    # ------------------------------------------------------------------
     # Movement control -> slam: start an iteration
     # ------------------------------------------------------------------
     def segment_callback(self, msg):
@@ -135,9 +130,11 @@ class SlamNode(Node):
         )
 
         # At end_of_delay, send whatever we have (0 or more tags).
+        # (A timer, not a direct call: the delay is still in the future and
+        # tf_callback must keep running to collect tags meanwhile.)
+        self.commit_timer = self.cancel_timer(self.commit_timer)
         wait = max(0.001, self.robot_iter.end_of_delay - self.now_sec())
-        # call invoke_ekf only after the delay
-        self.commit_timer = self.create_timer(wait, self.invoke_ekf) # why do you need this why can you just call commit_calback as a funciton
+        self.commit_timer = self.create_timer(wait, self.invoke_ekf)
 
     # ------------------------------------------------------------------
     # Detector -> slam: collect tags while an iteration exists
@@ -156,11 +153,10 @@ class SlamNode(Node):
             if not child.startswith("tag36h11:"):
                 continue
 
-            # Ignore tags captured before the previous segment stopped or
-            # after the delay ended (image stamp, not arrival time).
+            # Ignore tags captured before the segment stopped or after the
+            # delay ended (image stamp, not arrival time).
             t_img = stamp_to_sec(stamped.header.stamp)
             if not (it.stop_time <= t_img <= it.end_of_delay):
-                self.n_tags_rejected_time += 1
                 continue
 
             try:
@@ -178,11 +174,9 @@ class SlamNode(Node):
                 + self.camera_rotation @ tag_in_camera
             )
             it.tags.setdefault(tag_id, []).append(tag_in_robot[:2])
-            self.n_tags_accepted += 1
 
-    #At End of Delay, send all the collected tags and the current robot v,w to EKF
+    # At end of delay, send all collected tags and the burst's v, w to the EKF
     def invoke_ekf(self):
-        """ """
         self.commit_timer = self.cancel_timer(self.commit_timer)
         it = self.robot_iter
         if it is None:
@@ -194,27 +188,32 @@ class SlamNode(Node):
             tag_id: np.mean(np.array(xy_list), axis=0)
             for tag_id, xy_list in it.tags.items()
         }
-  
+
+        ok = 1.0
         try:
             self.ekf.update_state(it.v, it.w, it.dt, tags)
         except Exception as e:  # e.g. LinAlgError; never leave movement hanging
             self.get_logger().error(f"ekf update failed for seq={it.seq}: {e}")
+            ok = 0.0
 
-        self.publish_pose(it.seq, 1.0) 
+        self.last_seq = it.seq
         self.robot_iter = None  # clear: tags are ignored until the next segment
+        self.publish_pose(it.seq, ok)
 
     # ------------------------------------------------------------------
     # slam -> movement control
     # ------------------------------------------------------------------
+    def publish_current_pose(self):
+        self.publish_pose(self.last_seq, 1.0)
+
     def publish_pose(self, seq, ok):
-        """Send the state vector (landmarks and robot pose) to movement control"""
+        """Send the robot pose and landmarks to movement control."""
         pose = self.ekf.state[:3]
-        landmarks = self.landmarks_flat()
         out = Float64MultiArray()
         out.data = (
             [float(seq), float(ok), float(pose[0]), float(pose[1]),
              float(pose[2]), float(len(self.ekf.landmark_map))]
-            + landmarks
+            + self.landmarks_flat()
         )
         self.pose_pub.publish(out)
 
