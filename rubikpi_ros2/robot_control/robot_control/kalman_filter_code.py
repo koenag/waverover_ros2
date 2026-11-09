@@ -1,5 +1,10 @@
 import numpy as np
 
+MEASUREMENT_R = np.array([
+    [0.01, 0.0],
+    [0.0, 0.01],
+])
+
 
 class KalmanEKF:
     # Set up the state and the noise covariances.
@@ -8,8 +13,11 @@ class KalmanEKF:
         self.P = np.zeros((3, 3))  # Initial pose is assumed known.
         self.landmark_map = {}  # tag_id (int) -> index of the landmark's x in state
 
-        self.Q = np.diag([0.05**2, 0.05**2])  # noise on (v, w)
-        self.R = np.diag([0.03**2, 0.03**2])  # noise on a tag's (x, y), robot frame
+        self.Q = np.array([
+                    [0.001, 0.002],
+                    [0.002, 0.003],
+                ])# noise on (v, w)
+        self.R = MEASUREMENT_R# noise on a tag's (x, y), robot frame
 
     # Keep an angle between -pi and pi.
     @staticmethod
