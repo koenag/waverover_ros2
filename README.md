@@ -5,8 +5,9 @@
 waverover_ros2/
 ├── README.md
 ├── calibrate_camera.py
-├── waypoint_1.txt # HW 1 waypoints
-├── waypoint_2.txt # HW 2 waypoints
+├── plot_trajectory.py
+├── waypoint_1.txt
+├── waypoint_2.txt
 └── rubikpi_ros2/
     ├── README.md
     ├── robot_control/
