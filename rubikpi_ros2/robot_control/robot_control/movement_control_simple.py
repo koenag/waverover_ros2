@@ -109,10 +109,7 @@ class MovementController(Node):
                 f'{math.degrees(d[4]):+.1f}deg)')
             return
 
-        if not self.waiting_slam or seq != self.seq_num:
-            self.get_logger().warning(
-                f'Ignoring stale slam reply seq={seq} (current seq={self.seq_num})')
-            return
+    
 
         if ok:
             self.pose = (d[2], d[3], d[4])
