@@ -226,8 +226,13 @@ class SlamNode(Node):
             f"commit: frames={it.frames_used} tags={sorted(it.tag_ids)} "
             f"pose=({x:.3f}, {y:.3f}, {np.degrees(theta):+.1f}deg)")
         self.get_logger().info(
-            f"EKF state vector: {np.array2string(self.ekf.state, precision=4)}"
+            f"Robot pose: {np.round(self.ekf.state[:3], 4)}"
         )
+
+        for tag_id, i in self.ekf.landmark_map.items():
+            self.get_logger().info(
+                f"Tag {tag_id}: {np.round(self.ekf.state[i:i+2], 4)}"
+            )
         self.publish_pose(1.0 if it.ok else 0.0)
 
     # ------------------------------------------------------------------
