@@ -67,8 +67,6 @@ class SLAMNode(Node):
         self.segment_ready = False
         self.seen_frames = set()
 
-        # Logging time tracking
-        self.last_state_log = 0.0
 
         # Transform from camera optical coordinates to rover coordinates.
         # Robot axes: x forward, y left.  Keep the original calibrated values.
@@ -159,12 +157,16 @@ class SLAMNode(Node):
             # A new motion burst begins; any earlier observation window ends.
             self.stop_time = None
             self.seen_frames.clear()
+            # === LOG ADDED: motion prediction begins (no camera correction while moving) ===
+            self.get_logger().info('SLAM | MOVING: estimating pose from velocity commands')
         elif was_moving and not is_moving:
             # Start ONE settle + observation window for this completed burst.
             # Repeated zero commands must not reset the start time.
             self.stop_time = now
             self.segment_ready = False
             self.seen_frames.clear()
+            # === LOG ADDED: observation window begins after settling ===
+            self.get_logger().info('SLAM | STOPPED: waiting for camera observation window')
 
     def camera_callback(self, msg):
         """Use only camera frames CAPTURED during a settled stationary period."""
@@ -221,7 +223,24 @@ class SLAMNode(Node):
             self.predict_to(now)
             if self.failed:
                 return
+            # === LOG ADDED: distinguish new landmarks from existing pose references ===
+            mapped_before = set(self.ekf.get_landmarks())
+            pose_before = np.array(self.ekf.get_robot_pose())
+            new_ids = sorted(set(tags) - mapped_before)
+            known_ids = sorted(set(tags) & mapped_before)
+            if new_ids:
+                self.get_logger().info(f'SLAM | NEW TAG(S): {new_ids} (not yet mapped)')
+
             self.ekf.process_observations(list(tags.values()))
+
+            # === LOG ADDED: show tags passed to EKF and resulting pose correction ===
+            pose_after = np.array(self.ekf.get_robot_pose())
+            added_ids = sorted(set(self.ekf.get_landmarks()) - mapped_before)
+            self.get_logger().info(
+                f'SLAM | EKF OBSERVATION: known={known_ids}, new={new_ids}, '
+                f'mapped={added_ids} | pose '
+                f'{np.round(pose_before, 3)} -> {np.round(pose_after, 3)}'
+            )
             self.seen_frames.add(capture_time)
 
     def timer_callback(self):
@@ -243,13 +262,6 @@ class SLAMNode(Node):
         if self.failed:
             return
 
-        # Log the complete EKF state once per second.
-        if now - self.last_state_log >= 1.0:
-            self.get_logger().info(
-                f"EKF state: {np.round(self.ekf.state, 3)}"
-            )
-            self.last_state_log = now
-
         # Publish a live estimate at every timer tick, with or without tags.
         self.publish_pose(self.pose_pub)
 
@@ -260,6 +272,11 @@ class SLAMNode(Node):
                 and now >= self.stop_time + (SETTLE_TIME + OBSERVATION_TIME) * NANOSECONDS):
             self.segment_ready = True
             self.publish_pose(self.segment_pose_pub)
+            # === LOG ADDED: final pose handed to the controller after this stop ===
+            self.get_logger().info(
+                f'SLAM | SEGMENT READY: pose={np.round(self.ekf.get_robot_pose(), 3)} '
+                f'| camera_frames_used={len(self.seen_frames)}'
+            )
 
         # Keep landmark output simple; it is just a flat list of ID/x/y triples.
         self.publish_landmarks()
