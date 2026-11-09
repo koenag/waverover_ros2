@@ -24,7 +24,7 @@ from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
 from tf2_msgs.msg import TFMessage
 
-from kalman_filter_code import KalmanEKF
+from robot_control.kalman_filter_code import KalmanEKF
 
 
 def stamp_to_sec(stamp):
