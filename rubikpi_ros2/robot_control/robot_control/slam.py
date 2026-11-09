@@ -4,14 +4,14 @@ The EKF is a plain Python class (kalman_filter_code.py, class KalmanEKF) that
 this node calls directly, so there are no ekf topics.
 
   robot_movement_vw    (movement -> slam)
-      [seq, v, w, dt, stop_time, end_of_delay]
+      [v, w, dt, stop_time, end_of_delay]
       Absolute ROS-clock times in seconds. Tags whose image stamp is in
       [stop_time, end_of_delay] are accepted.
 
   verified_pose_update (slam -> movement)
-      [seq, ok, x, y, theta, n_landmarks, id1, mx1, my1, ...]
-      Published continuously (POSE_PUBLISH_PERIOD) with the seq of the last
-      committed segment (0 before any), and immediately after each commit.
+      [ok, x, y, theta, n_landmarks, id1, mx1, my1, ...]
+      Published once at startup (the starting pose), then exactly once
+      after each commit. Movement waits for it, so no sequence number.
       ok = 1.0 normal, 0.0 if the EKF update failed (pose is then the
       last known pose)
 
@@ -28,7 +28,7 @@ from tf2_msgs.msg import TFMessage
 
 from robot_control.kalman_filter_code import KalmanEKF
 
-POSE_PUBLISH_PERIOD = 0.5  # seconds between continuous pose publications
+STARTUP_POSE_DELAY = 2.0  # seconds after launch before the starting pose is sent
 
 
 def stamp_to_sec(stamp):
@@ -42,8 +42,7 @@ class RobotIter:
     None once the pose has been published back. Tags are only collected
     while one exists."""
 
-    def __init__(self, seq, v, w, dt, end_of_delay, stop_time):
-        self.seq = seq
+    def __init__(self, v, w, dt, stop_time, end_of_delay):
         self.v = v
         self.w = w
         self.dt = dt
@@ -78,7 +77,6 @@ class SlamNode(Node):
         self.ekf = KalmanEKF()
         self.robot_iter = None
         self.commit_timer = None
-        self.last_seq = 0  # seq of the last committed segment (0 = none yet)
 
         self.create_subscription(
             Float64MultiArray, "robot_movement_vw", self.segment_callback, 10)
@@ -88,9 +86,9 @@ class SlamNode(Node):
         self.pose_pub = self.create_publisher(
             Float64MultiArray, "verified_pose_update", 10)
 
-        # Always publish the current pose so movement_control never has to
-        # assume where the robot is.
-        self.create_timer(POSE_PUBLISH_PERIOD, self.publish_current_pose)
+        # Publish the starting pose once so movement_control doesn't have to
+        # assume where the robot is. (Start movement_control first.)
+        self.init_timer = self.create_timer(STARTUP_POSE_DELAY, self.publish_initial_pose)
 
         self.get_logger().info("slam_node ready")
 
@@ -119,14 +117,13 @@ class SlamNode(Node):
     # ------------------------------------------------------------------
     def segment_callback(self, msg):
         d = msg.data
-        if len(d) < 6:
-            self.get_logger().error("robot_movement_vw needs 6 values")
+        if len(d) < 5:
+            self.get_logger().error("robot_movement_vw needs 5 values")
             return
 
         self.robot_iter = RobotIter(
-            seq=int(d[0]), v=float(d[1]), w=float(d[2]), dt=float(d[3]),
-            stop_time=float(d[4]),
-            end_of_delay=float(d[5]),
+            v=float(d[0]), w=float(d[1]), dt=float(d[2]),
+            stop_time=float(d[3]), end_of_delay=float(d[4]),
         )
 
         # At end_of_delay, send whatever we have (0 or more tags).
@@ -193,25 +190,25 @@ class SlamNode(Node):
         try:
             self.ekf.update_state(it.v, it.w, it.dt, tags)
         except Exception as e:  # e.g. LinAlgError; never leave movement hanging
-            self.get_logger().error(f"ekf update failed for seq={it.seq}: {e}")
+            self.get_logger().error(f"ekf update failed: {e}")
             ok = 0.0
 
-        self.last_seq = it.seq
         self.robot_iter = None  # clear: tags are ignored until the next segment
-        self.publish_pose(it.seq, ok)
+        self.publish_pose(ok)
 
     # ------------------------------------------------------------------
     # slam -> movement control
     # ------------------------------------------------------------------
-    def publish_current_pose(self):
-        self.publish_pose(self.last_seq, 1.0)
+    def publish_initial_pose(self):
+        self.init_timer = self.cancel_timer(self.init_timer)
+        self.publish_pose(1.0)
 
-    def publish_pose(self, seq, ok):
+    def publish_pose(self, ok):
         """Send the robot pose and landmarks to movement control."""
         pose = self.ekf.state[:3]
         out = Float64MultiArray()
         out.data = (
-            [float(seq), float(ok), float(pose[0]), float(pose[1]),
+            [float(ok), float(pose[0]), float(pose[1]),
              float(pose[2]), float(len(self.ekf.landmark_map))]
             + self.landmarks_flat()
         )

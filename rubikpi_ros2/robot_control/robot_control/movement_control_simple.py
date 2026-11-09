@@ -36,7 +36,7 @@ class MovementController(Node):
     def __init__(self):
         '''
         Publishes L,R to motor_commands
-        Publishes [seq, v, w, dt, stop_time, end_of_delay] to robot_movement_vw
+        Publishes [v, w, dt, stop_time, end_of_delay] to robot_movement_vw
         Subscribes to verified_pose_update from slam
         '''
         super().__init__('movement_controller_node')
@@ -76,7 +76,7 @@ class MovementController(Node):
         self.position_reached = False
 
         # Slam handshake
-        self.seq_num = 0             # id of the last segment sent to slam
+        self.burst_count = 0         # bursts sent to slam (for logs only)
         self.waiting_slam = False    # True from the end of a burst until slam replies
         self.last_wait_log = 0.0
 
@@ -93,36 +93,36 @@ class MovementController(Node):
 
     def update_pose(self, msg):
         '''
-        Slam's reply: [seq, ok, x, y, theta, n, id, mx, my, ...]
-        Only accepted while we are waiting, and only for the segment we sent.
+        Slam's message: [ok, x, y, theta, n, id, mx, my, ...]
+        The first one is the starting pose. After that slam sends exactly one
+        per burst, so a message while waiting is the reply to that burst.
         '''
         d = msg.data
-        seq, ok = int(d[0]), d[1]
+        ok = d[0]
 
-        # Slam publishes its pose continuously. Before our first burst, take
-        # it as the starting pose instead of assuming one.
         if self.pose is None:
-            self.pose = (d[2], d[3], d[4])
+            self.pose = (d[1], d[2], d[3])
             self.pose_time = time.monotonic()
             self.get_logger().info(
-                f'[START POSE] from slam: ({d[2]:.3f}, {d[3]:.3f}, '
-                f'{math.degrees(d[4]):+.1f}deg)')
+                f'[START POSE] from slam: ({d[1]:.3f}, {d[2]:.3f}, '
+                f'{math.degrees(d[3]):+.1f}deg)')
             return
 
-    
+        if not self.waiting_slam:
+            return  # not expecting anything from slam
 
         if ok:
-            self.pose = (d[2], d[3], d[4])
+            self.pose = (d[1], d[2], d[3])
         else:
             self.get_logger().warning('slam update failed; keeping last pose')
 
-        n = int(d[5])
-        self.landmarks = {int(d[6 + 3*k]): (d[7 + 3*k], d[8 + 3*k]) for k in range(n)}
+        n = int(d[4])
+        self.landmarks = {int(d[5 + 3*k]): (d[6 + 3*k], d[7 + 3*k]) for k in range(n)}
         self.waiting_slam = False            # lets the next burst start
         self.pose_time = time.monotonic()    # marks the pose as new for the planner
         self.get_logger().info(
-            f'[SLAM] seq={seq} pose=({self.pose[0]:.3f}, {self.pose[1]:.3f}, '
-            f'{math.degrees(self.pose[2]):+.1f}deg) tags={n}')
+            f'[SLAM] burst {self.burst_count} pose=({self.pose[0]:.3f}, '
+            f'{self.pose[1]:.3f}, {math.degrees(self.pose[2]):+.1f}deg) tags={n}')
 
     def command(self, linear_speed, angular_speed):
         '''Send L,R to the motors. Returns the (v, w) actually commanded after saturation.'''
@@ -169,7 +169,7 @@ class MovementController(Node):
             self.command(0.0, 0.0)
             if now - self.last_wait_log > 2.0:
                 self.last_wait_log = now
-                self.get_logger().warning(f'Waiting for slam reply to seq={self.seq_num}')
+                self.get_logger().warning(f'Waiting for slam reply to burst {self.burst_count}')
             return
 
         # Startup wait / pause after reaching a waypoint
@@ -190,15 +190,14 @@ class MovementController(Node):
             dt = now - start                  # how long the motors were on
             stop_time = self.ros_now()        # absolute time, must be ROS time
 
-            self.seq_num += 1
+            self.burst_count += 1
             self.slam_publisher.publish(Float64MultiArray(data=[
-                float(self.seq_num), linear, angular, dt,
-                stop_time, stop_time + DELAY]))
+                linear, angular, dt, stop_time, stop_time + DELAY]))
 
             self.movement = None
             self.waiting_slam = True
             self.get_logger().info(
-                f'[MOVE END] {description} | sent seq={self.seq_num}, dt={dt:.2f}s')
+                f'[MOVE END] {description} | sent burst {self.burst_count}, dt={dt:.2f}s')
             return
 
         # All waypoints completed.
@@ -245,7 +244,6 @@ class MovementController(Node):
 
                 if self.waypoint_index >= len(self.waypoints):
                     self.get_logger().info('[DONE] All waypoints completed')
-                    self.waypoint_index = 0
             else:
                 self.create_movement(
                     0.0, math.copysign(TURN_SPEED, final_heading_error),
@@ -271,7 +269,10 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.command(0.0, 0.0)
+        try:
+            node.command(0.0, 0.0)  # fails if Ctrl-C already invalidated the context
+        except Exception:
+            pass
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
