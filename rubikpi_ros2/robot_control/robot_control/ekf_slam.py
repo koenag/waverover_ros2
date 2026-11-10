@@ -106,12 +106,49 @@ class EKFSLAM:
         landmark = np.array([x, y]) + rotation @ z
         n = len(self.state)
 
+
+        # J is how much the world coordinate prediction changes as x,y,theta changes (i.e the jacobian of the initial m_x, m_y of the tag the first time it was seen)
+        # [mx]   [cos(theta)  -sin(theta)] [zx]   [xr]
+        # [my] = [sin(theta)   cos(theta)] [zy] + [yr]      
         J = np.zeros((2, n))
         J[:, :3] = ((1, 0, -s * z[0] - c * z[1]),
                     (0, 1,  c * z[0] - s * z[1]))
 
+
+        #self.P @ J.T = how are errors in the robot and previously mapped landmarks correlated with errors in the new landmark's position?
+        # it is used in the expanded P 
+
+        #       [Cov(xr,    m2x)  Cov(xr,    m2y)]
+        #       [Cov(yr,    m2x)  Cov(yr,    m2y)]
+        #       [Cov(theta, m2x)  Cov(theta, m2y)]
+        #       [Cov(m1x,   m2x)  Cov(m1x,   m2y)]
+        #       [Cov(m1y,   m2x)  Cov(m1y,   m2y)]
+    
         cross_covariance = self.P @ J.T
+
+        # J @ self.P @ J.T =. how much is uncertainty of the landmark estimate position (J) affected by the uncertainty of the robots state (P)
+        # rotation @ R @ rotation.T = rotate the camera prediction uncertainty from the robot frame into the world frame
+        # landmark_covariance:
+        #
+        #       [Var(m2x)       Cov(m2x, m2y)]
+        #       [Cov(m2y, m2x)  Var(m2y)     ]
         landmark_covariance = J @ self.P @ J.T + rotation @ R @ rotation.T
+
+                # Expand P from (5 x 5) to (7 x 7):
+        #
+        #             Existing state (5)     New Tag 2 (2)
+        #
+        #           +---------------------+----------------+
+        #           |                     |                |
+        # Existing  |       P             | cross_cov      |
+        # state (5) |     (5 x 5)         |   (5 x 2)      |
+        #           |                     |                |
+        #           +---------------------+----------------+
+        #           |                     |                |
+        # Tag 2 (2) |  cross_cov.T        | landmark_cov   |
+        #           |     (2 x 5)         |    (2 x 2)     |
+        #           +---------------------+----------------+
+        #
         expanded_P = np.block([
             [self.P, cross_covariance],
             [cross_covariance.T, landmark_covariance],
