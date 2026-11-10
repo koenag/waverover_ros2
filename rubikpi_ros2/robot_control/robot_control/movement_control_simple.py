@@ -291,6 +291,56 @@ class MovementController(Node):
                     file.write(f'{x:.4f}, {y:.4f}, {theta:.4f}\n')
 
                 file.write('\n')
+        self.plot_trajectories()
+
+    def plot_trajectories(self):
+
+        import matplotlib.pyplot as plt
+        import matplotlib as mpl
+
+        trajectories = []
+        current_loop = []
+
+        with open("robot_trajectories.txt") as file:
+            for line in file:
+                line = line.strip()
+
+                if line.startswith("LOOP"):
+                    if current_loop:
+                        trajectories.append(current_loop)
+                    current_loop = []
+
+                elif line:
+                    x, y, theta = map(float, line.split(","))
+                    current_loop.append((x, y))
+
+        if current_loop:
+            trajectories.append(current_loop)
+
+        # Plot every loop in a different color
+        plt.figure(figsize=(8, 8))
+        colors = mpl.colormaps["tab10"]
+
+
+        for i, trajectory in enumerate(trajectories):
+            x, y = zip(*trajectory)
+
+            color = colors(i % 10)
+            plt.plot(x, y, color=color, label=f"Loop {i + 1}", linewidth=2)
+            plt.scatter(x[0], y[0], color=color, marker="o", s=40)
+            plt.scatter(x[-1], y[-1], color=color, marker="x", s=60)
+
+        plt.xlabel("X (meters)")
+        plt.ylabel("Y (meters)")
+        plt.title("EKF-SLAM Robot Trajectories")
+        plt.axis("equal")
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+
+        plt.savefig("robot_trajectories.png", dpi=300)
+        plt.show()
+
 
 
 def main(args=None):
