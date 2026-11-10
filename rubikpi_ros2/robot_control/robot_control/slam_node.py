@@ -63,7 +63,7 @@ class SLAMNode(Node):
 
         # Each moving -> stopped transition begins one observation cycle.
         # At the end we publish ONE segment pose, with or without any tags.
-        self.stop_time = None
+        self.robot_stop_time = None
         self.segment_ready = False
         self.seen_frames = set()
 
@@ -107,10 +107,7 @@ class SLAMNode(Node):
                 f'SLAM prediction is unreliable ({reason}); stop rover and restart SLAM.')
 
     def predict_to(self, timestamp):
-        """Advance robot pose AND covariance using the active velocity command.
-
-        This runs even when no AprilTag has ever been detected. Existing tag
-        positions do not move during prediction, but the joint P is propagated.
+        """Even when no april tag is detected run predict, but have the displacement count up to a specific timestep
         """
         if timestamp < self.last_ekf_time:
             self.fail('attempted to predict backward in time')
@@ -156,14 +153,14 @@ class SLAMNode(Node):
         self.last_command_time = now
 
         if movement_started:
-            self.stop_time = None
+            self.robot_stop_time = None
             self.seen_frames.clear()
             self.get_logger().info(
                 'SLAM | MOVING: estimating pose from velocity commands'
             )
 
         elif movement_stopped:
-            self.stop_time = now
+            self.robot_stop_time = now
             self.segment_ready = False
             self.seen_frames.clear()
             self.get_logger().info(
@@ -175,7 +172,7 @@ class SLAMNode(Node):
         camera_observations_disabled = (
             self.failed
             or self.command != ZERO_COMMAND
-            or self.stop_time is None
+            or self.robot_stop_time is None
             or self.segment_ready
         )
 
@@ -190,7 +187,7 @@ class SLAMNode(Node):
 
         # Camera processing may lag behind image capture. Both must fall in the
         # stationary interval; a frame captured while driving is not valid.
-        valid_from = self.stop_time + round(SETTLE_TIME * NANOSECONDS)
+        valid_from = self.robot_stop_time + round(SETTLE_TIME * NANOSECONDS)
         valid_until = valid_from + round(OBSERVATION_TIME * NANOSECONDS)
         
         observation_window_open = valid_from <= now <= valid_until
@@ -301,9 +298,9 @@ class SLAMNode(Node):
         # window ends, even if zero tags were detected. No search is needed.
         segment_ready_to_publish = (
             self.command == ZERO_COMMAND
-            and self.stop_time is not None
+            and self.robot_stop_time is not None
             and not self.segment_ready
-            and now >= self.stop_time + (SETTLE_TIME + OBSERVATION_TIME) * NANOSECONDS
+            and now >= self.robot_stop_time + (SETTLE_TIME + OBSERVATION_TIME) * NANOSECONDS
         )
 
         if segment_ready_to_publish:
