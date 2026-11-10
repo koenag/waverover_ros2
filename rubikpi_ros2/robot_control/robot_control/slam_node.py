@@ -151,14 +151,6 @@ class SLAMNode(Node):
         if self.failed:
             return
 
-        # === LOG ADDED: Print EKF state vector once per second ===
-        if now - self.last_state_log >= NANOSECONDS:
-            self.get_logger().info(
-                f"SLAM | EKF STATE: {np.round(self.ekf.state, 3)}"
-            )
-            self.last_state_log = now
-        # === END LOG ===
-
         # Publish a live estimate at every timer tick, with or without tags.
         self.publish_pose(self.pose_pub)
 
@@ -275,6 +267,16 @@ class SLAMNode(Node):
         self.predict_to(now)
         if self.failed:
             return
+
+        # === LOG ADDED: Print complete EKF state once per second, even while stopped ===
+        if now - self.last_state_log >= NANOSECONDS:
+            self.get_logger().info(
+                f'SLAM | STATE [robot_x, robot_y, yaw, tag_x, tag_y, ...]: '
+                f'{np.array2string(self.ekf.state, precision=3, suppress_small=True, threshold=10000)} '
+                f'| tag_order={list(self.ekf.landmark_indices.keys())}'
+            )
+            self.last_state_log = now
+        # === END LOG ===
 
         # Publish a live estimate at every timer tick, with or without tags.
         self.publish_pose(self.pose_pub)
