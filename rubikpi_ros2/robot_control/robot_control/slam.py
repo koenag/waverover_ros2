@@ -50,9 +50,12 @@ from tf2_msgs.msg import TFMessage
 
 from robot_control.kalman_filter_code import KalmanEKF
 
-DELAY = 0.4                # length of the camera capture window
+DELAY = 0.5                # length of the camera capture window
 SETTLE_TIME = 0.3          # wait for the rover to physically stop
-DETECTOR_LATENCY = 0.0     # extra time for late /tf messages from the window
+# Extra wait after the window closes so frames captured near its end (which
+# reach slam late) still count. Set it to a bit more than the max "latency"
+# printed in the commit log. The reply comes SETTLE + DELAY + this after the stop.
+DETECTOR_LATENCY = 0.3
 POSE_PUBLISH_PERIOD = 0.2  # how often /slam/pose is published
 END_MESSAGE_GRACE = 1.0    # stop extrapolating this long after the planned end
 
@@ -88,6 +91,7 @@ class RobotIter:
         self.seen_stamps = set()   # image stamps already applied
         self.frames_used = 0
         self.tag_ids = set()
+        self.max_latency = 0.0     # worst (arrival - image stamp), seconds
 
 
 class SlamNode(Node):
@@ -230,6 +234,7 @@ class SlamNode(Node):
 
         window_start = it.start_window + SETTLE_TIME
         window_end = window_start + DELAY
+        now = self.now_sec()
 
         # One /tf message can hold several tags from the same image.
         # Group them by image stamp: one frame = one EKF correction.
@@ -269,10 +274,19 @@ class SlamNode(Node):
         # Apply each frame immediately, oldest first. dt = 0 -> correction only.
         for t_img in sorted(frames):
             tags = frames[t_img]
+            pose_before = self.ekf.state[:3].copy()
             self.safe_ekf_step(it, 0.0, 0.0, 0.0, tags, "correction")
+            pose_after = self.ekf.state[:3]
             it.seen_stamps.add(t_img)
             it.frames_used += 1
             it.tag_ids.update(tags)
+
+            latency = now - t_img
+            it.max_latency = max(it.max_latency, latency)
+            self.get_logger().info(
+                f"frame t={t_img - it.start_window:+.2f}s after stop, "
+                f"latency={latency:.2f}s, tags={sorted(tags)} | pose "
+                f"{np.round(pose_before, 3)} -> {np.round(pose_after, 3)}")
 
     # ------------------------------------------------------------------
     # End of window: hand the pose back to movement
@@ -287,6 +301,7 @@ class SlamNode(Node):
         x, y, theta = self.ekf.state[:3]
         self.get_logger().info(
             f"commit: frames={it.frames_used} tags={sorted(it.tag_ids)} "
+            f"max_latency={it.max_latency:.2f}s "
             f"pose=({x:.3f}, {y:.3f}, {np.degrees(theta):+.1f}deg)")
         self.get_logger().info(
             f"Robot pose: {np.round(self.ekf.state[:3], 4)}"
