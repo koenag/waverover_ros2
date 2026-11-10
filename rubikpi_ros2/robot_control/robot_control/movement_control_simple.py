@@ -222,6 +222,7 @@ class MovementController(Node):
         # All waypoints completed.
         if self.waypoint_index >= len(self.waypoints):
             self.command(0.0, 0.0)
+            self.waypoint_index = 0
             return
 
         # No pose from slam yet, or nothing new since the last decision: stay stopped.
