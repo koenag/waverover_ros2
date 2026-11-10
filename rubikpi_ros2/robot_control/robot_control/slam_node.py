@@ -148,27 +148,38 @@ class SLAMNode(Node):
 
         was_moving = self.command != ZERO_COMMAND
         is_moving = new_command != ZERO_COMMAND
-        self.command = new_command
-        self.last_command_time = now  # Repeated commands are heartbeats.
 
-        if is_moving and not was_moving:
-            # A new motion burst begins; any earlier observation window ends.
+        movement_started = is_moving and not was_moving
+        movement_stopped = was_moving and not is_moving
+
+        self.command = new_command
+        self.last_command_time = now
+
+        if movement_started:
             self.stop_time = None
             self.seen_frames.clear()
-            # === LOG ADDED: motion prediction begins (no camera correction while moving) ===
-            self.get_logger().info('SLAM | MOVING: estimating pose from velocity commands')
-        elif was_moving and not is_moving:
-            # Start ONE settle + observation window for this completed burst.
-            # Repeated zero commands must not reset the start time.
+            self.get_logger().info(
+                'SLAM | MOVING: estimating pose from velocity commands'
+            )
+
+        elif movement_stopped:
             self.stop_time = now
             self.segment_ready = False
             self.seen_frames.clear()
-            # === LOG ADDED: observation window begins after settling ===
-            self.get_logger().info('SLAM | STOPPED: waiting for camera observation window')
+            self.get_logger().info(
+                'SLAM | STOPPED: waiting for camera observation window'
+            )
 
     def camera_callback(self, msg):
         """Use only camera frames CAPTURED during a settled stationary period."""
-        if self.failed or self.command != ZERO_COMMAND or self.stop_time is None or self.segment_ready:
+        camera_observations_disabled = (
+            self.failed
+            or self.command != ZERO_COMMAND
+            or self.stop_time is None
+            or self.segment_ready
+        )
+
+        if camera_observations_disabled:
             return
 
         now = self.now()
@@ -181,7 +192,9 @@ class SLAMNode(Node):
         # stationary interval; a frame captured while driving is not valid.
         valid_from = self.stop_time + round(SETTLE_TIME * NANOSECONDS)
         valid_until = valid_from + round(OBSERVATION_TIME * NANOSECONDS)
-        if not valid_from <= now <= valid_until:
+        
+        observation_window_open = valid_from <= now <= valid_until
+        if not observation_window_open:
             return
 
         # /tf may contain multiple tags from the SAME image. Group by stamp,
@@ -203,7 +216,12 @@ class SLAMNode(Node):
 
             p = transform.transform.translation
             p_camera = np.array([p.x, p.y, p.z])
-            if not np.all(np.isfinite(p_camera)) or p_camera[2] <= 0:
+            valid_camera_measurement = (
+                np.all(np.isfinite(p_camera))
+                and p_camera[2] > 0
+            )
+
+            if not valid_camera_measurement:
                 continue
 
             # Convert 3D camera coordinates to the planar robot measurement.
@@ -252,8 +270,13 @@ class SLAMNode(Node):
 
         # Missing command heartbeats during movement means true motion is
         # unknown; do not silently assume the motor hardware stopped.
-        if (self.command != ZERO_COMMAND and self.last_command_time is not None
-                and now - self.last_command_time > COMMAND_TIMEOUT * NANOSECONDS):
+        command_timed_out = (
+            self.command != ZERO_COMMAND
+            and self.last_command_time is not None
+            and now - self.last_command_time > COMMAND_TIMEOUT * NANOSECONDS
+        )
+
+        if command_timed_out:
             self.fail('missing velocity command heartbeat')
             return
 
@@ -276,9 +299,14 @@ class SLAMNode(Node):
 
         # The pose is also published once as "ready" after the observation
         # window ends, even if zero tags were detected. No search is needed.
-        if (self.command == ZERO_COMMAND and self.stop_time is not None
-                and not self.segment_ready
-                and now >= self.stop_time + (SETTLE_TIME + OBSERVATION_TIME) * NANOSECONDS):
+        segment_ready_to_publish = (
+            self.command == ZERO_COMMAND
+            and self.stop_time is not None
+            and not self.segment_ready
+            and now >= self.stop_time + (SETTLE_TIME + OBSERVATION_TIME) * NANOSECONDS
+        )
+
+        if segment_ready_to_publish:
             self.segment_ready = True
             self.publish_pose(self.segment_pose_pub)
             # === LOG ADDED: final pose handed to the controller after this stop ===
