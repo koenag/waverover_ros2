@@ -91,6 +91,8 @@ class SLAMNode(Node):
         self.create_subscription(
             TwistStamped, '/slam/cmd_velocity', self.velocity_callback, 10)
         self.create_subscription(TFMessage, '/tf', self.camera_callback, 100)
+
+
         self.create_timer(TIMER_PERIOD, self.timer_callback)
 
     def now(self):
@@ -283,10 +285,16 @@ class SLAMNode(Node):
 
         # === LOG ADDED: Print complete EKF state once per second, even while stopped ===
         if now - self.last_state_log >= NANOSECONDS:
+            tmp_x, tmp_y, tmp_theta = self.ekf.get_robot_pose()
+
+            landmarks = [
+                f'Tag {tag_id}: ({position[0]:.3f}, {position[1]:.3f})'
+                for tag_id, (position, _) in self.ekf.get_landmarks().items()
+            ]
+
             self.get_logger().info(
-                f'SLAM | STATE [robot_x, robot_y, yaw, tag_x, tag_y, ...]: '
-                f'{np.array2string(self.ekf.state, precision=3, suppress_small=True, threshold=10000)} '
-                f'| tag_order={list(self.ekf.landmark_indices.keys())}'
+                f'SLAM | ROBOT: x={tmp_x:.3f}, y={tmp_y:.3f}, theta={tmp_theta:.3f} | '
+                f'LANDMARKS: {", ".join(landmarks) if landmarks else "None"}'
             )
             self.last_state_log = now
         # === END LOG ===
