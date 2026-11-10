@@ -56,7 +56,7 @@ class SLAMNode(Node):
         # Current command and the time through which it has been integrated.
         # Use ROS time for both command receipt and camera capture timestamps.
         self.clock = self.get_clock()
-        self.ekf_time = None
+        self.last_ekf_time = None
         self.command = ZERO_COMMAND
         self.last_command_time = None
         self.failed = False
@@ -95,8 +95,8 @@ class SLAMNode(Node):
 
     def now(self):
         t = self.get_clock().now().nanoseconds
-        if self.ekf_time is None:
-            self.ekf_time = t
+        if self.last_ekf_time is None:
+            self.last_ekf_time = t
         return t
 
     def fail(self, reason):
@@ -112,17 +112,17 @@ class SLAMNode(Node):
         This runs even when no AprilTag has ever been detected. Existing tag
         positions do not move during prediction, but the joint P is propagated.
         """
-        if timestamp < self.ekf_time:
+        if timestamp < self.last_ekf_time:
             self.fail('attempted to predict backward in time')
             return
 
         # Integrate the real elapsed time, not a hard-coded timer interval.
         # Splitting long intervals improves midpoint-integration accuracy.
         max_step_ns = round(MAX_PREDICT_STEP * NANOSECONDS)
-        while self.ekf_time < timestamp:
-            step = min(timestamp - self.ekf_time, max_step_ns)
+        while self.last_ekf_time < timestamp:
+            step = min(timestamp - self.last_ekf_time, max_step_ns)
             self.ekf.predict(*self.command, step / NANOSECONDS)
-            self.ekf_time += step
+            self.last_ekf_time += step
 
     def velocity_callback(self, msg):
         """Update the command, integrating the OLD command before switching."""
