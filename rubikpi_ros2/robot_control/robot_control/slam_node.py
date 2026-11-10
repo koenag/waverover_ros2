@@ -17,7 +17,7 @@ MOTION_NOISE = MotionNoise(
     q_d_per_m=0.001,
     q_d_per_rad=0.0002,
     q_theta_per_m=0.002,
-    q_theta_per_rad=0.005,
+    q_theta_per_rad=0.004,
 )
 
 # R IS a fixed 2x2 covariance for [tag_forward, tag_left], in meters squared.
@@ -87,8 +87,6 @@ class SLAMNode(Node):
         # Float32MultiArray contains [tag_id, x, y] triples for debugging.
         self.pose_pub = self.create_publisher(Pose2D, '/slam/pose', 10)
         self.segment_pose_pub = self.create_publisher(Pose2D, '/slam/segment_pose', 10)
-        self.landmark_pub = self.create_publisher(
-            Float32MultiArray, '/slam/landmarks', 10)
 
         self.create_subscription(
             TwistStamped, '/slam/cmd_velocity', self.velocity_callback, 10)
@@ -294,8 +292,6 @@ class SLAMNode(Node):
                 f'| camera_frames_used={len(self.seen_frames)}'
             )
 
-        # Keep landmark output simple; it is just a flat list of ID/x/y triples.
-        self.publish_landmarks()
 
     def publish_pose(self, publisher):
         """Publish the 2D robot pose; covariance stays inside EKFSLAM."""
@@ -303,13 +299,6 @@ class SLAMNode(Node):
         msg = Pose2D()
         msg.x, msg.y, msg.theta = float(x), float(y), float(theta)
         publisher.publish(msg)
-
-    def publish_landmarks(self):
-        """Publish [tag_id, world_x, world_y, ...] for debugging/plotting."""
-        data = []
-        for tag_id, (position, _) in self.ekf.get_landmarks().items():
-            data.extend([float(tag_id), float(position[0]), float(position[1])])
-        self.landmark_pub.publish(Float32MultiArray(data=data))
 
 
 def main(args=None):
