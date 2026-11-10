@@ -3,6 +3,7 @@ import time
 
 import numpy as np
 import rclpy
+from geometry_msgs.msg import Pose2D
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray, Float64MultiArray
 
@@ -35,8 +36,10 @@ class MovementController(Node):
     def __init__(self):
         '''
         Publishes L,R to motor_commands
-        Publishes [v, w, dt, stop_time, end_of_delay] to robot_movement_vw
-        Subscribes to verified_pose_update from slam
+        Publishes [v, w, start_time, duration] to robot_burst_start when a burst starts
+        Publishes [v, w, dt, stop_time] to robot_movement_vw when a burst ends
+        Subscribes to verified_pose_update from slam (the reply to each burst)
+        Subscribes to /slam/pose from slam (periodic; start pose and monitoring)
         '''
         super().__init__('movement_controller_node')
 
@@ -47,8 +50,12 @@ class MovementController(Node):
         # Slam topics are float64 (absolute ROS times don't fit in float32)
         self.slam_publisher = self.create_publisher(
             Float64MultiArray, 'robot_movement_vw', 10)
+        self.burst_start_publisher = self.create_publisher(
+            Float64MultiArray, 'robot_burst_start', 10)
         self.create_subscription(
             Float64MultiArray, 'verified_pose_update', self.update_pose, 10)
+        self.create_subscription(
+            Pose2D, '/slam/pose', self.update_live_pose, 10)
 
         with open('./waypoint_2.txt') as file:
             self.waypoints = [
@@ -59,7 +66,8 @@ class MovementController(Node):
 
         self.waypoint_index = 1  # Waypoint 0 is the starting position
 
-        self.pose = None                   # latest pose from slam; None until slam publishes
+        self.pose = None                   # last pose slam REPLIED with; None until /slam/pose arrives
+        self.live_pose = None              # latest periodic /slam/pose (monitoring only)
         self.landmarks = {}                # latest landmarks from slam
         self.pose_time = time.monotonic()  # when self.pose was last set
         self.used_pose_time = 0.0          # pose_time the planner last used
@@ -90,22 +98,29 @@ class MovementController(Node):
     def ros_now(self):
         return self.get_clock().now().nanoseconds * 1e-9
 
+    def update_live_pose(self, msg):
+        '''
+        Slam's periodic pose. The first one is the starting pose. After that
+        it is stored for monitoring only: the planner uses self.pose, which
+        only changes on slam's reply to a burst.
+        '''
+        self.live_pose = (msg.x, msg.y, msg.theta)
+
+        if self.pose is None:
+            self.pose = self.live_pose
+            self.pose_time = time.monotonic()
+            self.get_logger().info(
+                f'[START POSE] from slam: ({msg.x:.3f}, {msg.y:.3f}, '
+                f'{math.degrees(msg.theta):+.1f}deg)')
+
     def update_pose(self, msg):
         '''
-        Slam's message: [ok, x, y, theta, n, id, mx, my, ...]
-        The first one is the starting pose. After that slam sends exactly one
-        per burst, so a message while waiting is the reply to that burst.
+        Slam's reply: [ok, x, y, theta, n, id, mx, my, ...]
+        Slam sends exactly one per burst, so a message while waiting is the
+        reply to that burst.
         '''
         d = msg.data
         ok = d[0]
-
-        if self.pose is None:
-            self.pose = (d[1], d[2], d[3])
-            self.pose_time = time.monotonic()
-            self.get_logger().info(
-                f'[START POSE] from slam: ({d[1]:.3f}, {d[2]:.3f}, '
-                f'{math.degrees(d[3]):+.1f}deg)')
-            return
 
         if not self.waiting_slam:
             return  # not expecting anything from slam
@@ -145,8 +160,13 @@ class MovementController(Node):
         actual_speed = abs(actual_linear if linear_speed != 0 else actual_angular)
         duration = amount / max(actual_speed, 1e-6)
 
-        self.movement = (linear_speed, angular_speed, actual_linear, actual_angular,
-                         time.monotonic(), duration, description)
+        self.movement = (actual_linear, actual_angular, time.monotonic(),
+                         duration, description)
+
+        # Tell slam the burst has started so it can show a live pose.
+        # Absolute time, so it must be ROS time.
+        self.burst_start_publisher.publish(Float64MultiArray(data=[
+            actual_linear, actual_angular, self.ros_now(), duration]))
 
         self.get_logger().info(
             f'[MOVE START] {description} | '
@@ -178,11 +198,11 @@ class MovementController(Node):
 
         # In a burst: keep driving, then stop and report it to slam
         if self.movement:
-            requested_linear, requested_angular, linear, angular, start, duration, description = self.movement
+            linear, angular, start, duration, description = self.movement
 
-            # Match the working controller: run until the full duration elapses.
-            if now - start < duration:
-                self.command(requested_linear, requested_angular)
+            # Round to the nearest control tick instead of always overshooting
+            if now - start < duration - CALLBACK_FREQUENCY / 2:
+                self.command(linear, angular)
                 return
 
             self.command(0.0, 0.0)
@@ -242,7 +262,6 @@ class MovementController(Node):
                 self.pose_time = time.monotonic()
 
                 if self.waypoint_index >= len(self.waypoints):
-                    self.waypoint_index=0
                     self.get_logger().info('[DONE] All waypoints completed')
             else:
                 self.create_movement(

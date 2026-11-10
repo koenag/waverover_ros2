@@ -3,42 +3,73 @@
 The EKF is a plain Python class (kalman_filter_code.py, class KalmanEKF) that
 this node calls directly, so there are no ekf topics.
 
+  robot_burst_start    (movement -> slam)
+      [v, w, start_time, duration]
+      Sent when a burst STARTS. Slam uses it only to show a live pose while
+      the robot is moving. Nothing is committed to the EKF from it.
+
   robot_movement_vw    (movement -> slam)
       [v, w, dt, start_window]
-      Absolute ROS-clock times in seconds. Tags whose image stamp is in
-      [start_window + SETTLE_TIME, start_window + SETTLE_TIME + DELAY]
-      are accepted.
+      Sent when a burst ENDS. Absolute ROS-clock times in seconds. Tags whose
+      image stamp is in [start_window + SETTLE_TIME,
+      start_window + SETTLE_TIME + DELAY] are accepted.
+
+  /slam/pose           (slam -> movement)   Pose2D, every POSE_PUBLISH_PERIOD
+      The best current pose. While a burst is running it is the committed
+      pose extrapolated along the burst. Movement uses it for the starting
+      pose and for monitoring only, never as a reply.
 
   verified_pose_update (slam -> movement)
       [ok, x, y, theta, n_landmarks, id1, mx1, my1, ...]
-      Published once at startup (the starting pose), then exactly once
-      after each commit. Movement waits for it, so no sequence number.
+      Exactly once after each commit. Movement waits for it.
       ok = 1.0 normal, 0.0 if an EKF step failed (pose is then the
       last good pose)
 
-Flow per iteration:
-  1. robot_movement_vw arrives -> predict ONCE with (v, w, dt).
-  2. Each camera frame in the window -> one correction step, applied
-     immediately as it arrives (one update per frame, not one per stop).
-  3. At window end + detector latency -> publish the pose.
+When slam accepts tags (one state at a time):
+  IDLE    no burst known.                      Tags ignored.
+  MOVING  robot_burst_start received.          Tags ignored.
+  WINDOW  robot_movement_vw received, before   Tags accepted if their image
+          the commit timer fires.              stamp is inside the window.
+  A commit (or an abandoned window) returns to IDLE.
+
+Edge cases:
+  - End message with no start message: works (WINDOW directly).
+  - Start message while a window is still pending: the old window is
+    abandoned (its commit timer is cancelled, no reply is sent for it).
+  - End message never arrives: the live pose stops extrapolating at
+    duration + END_MESSAGE_GRACE and falls back to the committed pose.
 """
 
 import numpy as np
 import rclpy
 
+from geometry_msgs.msg import Pose2D
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray
 from tf2_msgs.msg import TFMessage
 
 from robot_control.kalman_filter_code import KalmanEKF
 
-STARTUP_POSE_DELAY = 2.0  # seconds after launch before the starting pose is sent
-DELAY = 0.4               # length of the camera capture window
-SETTLE_TIME = 0.3         # wait for the rover to physically stop
-DETECTOR_LATENCY = 0.0    # extra time for late /tf messages from the window
+DELAY = 0.4                # length of the camera capture window
+SETTLE_TIME = 0.3          # wait for the rover to physically stop
+DETECTOR_LATENCY = 0.0     # extra time for late /tf messages from the window
+POSE_PUBLISH_PERIOD = 0.2  # how often /slam/pose is published
+END_MESSAGE_GRACE = 1.0    # stop extrapolating this long after the planned end
+
 
 def stamp_to_sec(stamp):
     return stamp.sec + stamp.nanosec * 1e-9
+
+
+class LiveBurst:
+    """A burst that has started but whose end message hasn't arrived yet."""
+
+    def __init__(self, v, w, start_time, duration):
+        self.v = v
+        self.w = w
+        self.start_time = start_time
+        self.duration = duration
+        self.expired = False       # True once the end message is overdue
 
 
 class RobotIter:
@@ -84,8 +115,11 @@ class SlamNode(Node):
 
         self.ekf = KalmanEKF()
         self.robot_iter = None
+        self.live_burst = None
         self.commit_timer = None
 
+        self.create_subscription(
+            Float64MultiArray, "robot_burst_start", self.burst_start_callback, 10)
         self.create_subscription(
             Float64MultiArray, "robot_movement_vw", self.segment_callback, 10)
         self.create_subscription(
@@ -93,10 +127,11 @@ class SlamNode(Node):
 
         self.pose_pub = self.create_publisher(
             Float64MultiArray, "verified_pose_update", 10)
+        self.live_pose_pub = self.create_publisher(Pose2D, "/slam/pose", 10)
 
-        # Publish the starting pose once so movement_control doesn't have to
-        # assume where the robot is. (Start movement_control first.)
-        self.init_timer = self.create_timer(STARTUP_POSE_DELAY, self.publish_initial_pose)
+        # Periodic pose. The first message is also how movement learns the
+        # starting pose, so there is no one-shot startup publish any more.
+        self.create_timer(POSE_PUBLISH_PERIOD, self.publish_live_pose)
 
         self.get_logger().info("slam_node ready")
 
@@ -133,13 +168,38 @@ class SlamNode(Node):
             self.get_logger().error(f"ekf {what} failed: {e}")
 
     # ------------------------------------------------------------------
-    # Movement control -> slam: start an iteration and predict
+    # Movement control -> slam: a burst starts (MOVING)
+    # ------------------------------------------------------------------
+    def burst_start_callback(self, msg):
+        d = msg.data
+        if len(d) < 4 or not np.all(np.isfinite(d[:4])) or d[3] < 0:
+            self.get_logger().error(
+                "robot_burst_start needs 4 finite values [v, w, start, duration]")
+            return
+
+        # A new burst while the previous window is still open: movement moved
+        # on without waiting, so the old reply would be stale. Abandon it.
+        if self.robot_iter is not None:
+            self.get_logger().warning(
+                "burst started while the previous window was pending; abandoning it")
+            self.commit_timer = self.cancel_timer(self.commit_timer)
+            self.robot_iter = None
+
+        self.live_burst = LiveBurst(
+            v=float(d[0]), w=float(d[1]),
+            start_time=float(d[2]), duration=float(d[3]))
+
+    # ------------------------------------------------------------------
+    # Movement control -> slam: the burst ended; predict (WINDOW)
     # ------------------------------------------------------------------
     def segment_callback(self, msg):
         d = msg.data
         if len(d) < 4:
             self.get_logger().error("robot_movement_vw needs 4 values")
             return
+
+        # The burst is over, whether or not we saw its start message.
+        self.live_burst = None
 
         it = RobotIter(
             v=float(d[0]), w=float(d[1]), dt=float(d[2]),
@@ -161,6 +221,9 @@ class SlamNode(Node):
     # Detector -> slam: correct with each frame as it arrives
     # ------------------------------------------------------------------
     def tf_callback(self, msg):
+        # Only in WINDOW: not while a burst is running, not when idle.
+        if self.live_burst is not None:
+            return
         it = self.robot_iter
         if it is None:
             return
@@ -220,7 +283,7 @@ class SlamNode(Node):
         if it is None:
             return
 
-        self.robot_iter = None  # tags are ignored until the next segment
+        self.robot_iter = None  # tags are ignored until the next burst
         x, y, theta = self.ekf.state[:3]
         self.get_logger().info(
             f"commit: frames={it.frames_used} tags={sorted(it.tag_ids)} "
@@ -238,9 +301,33 @@ class SlamNode(Node):
     # ------------------------------------------------------------------
     # slam -> movement control
     # ------------------------------------------------------------------
-    def publish_initial_pose(self):
-        self.init_timer = self.cancel_timer(self.init_timer)
-        self.publish_pose(1.0)
+    def live_state(self):
+        """Pose state now: the EKF state, extrapolated along a running burst.
+
+        Works on a copy, so the EKF itself is only changed by the end message
+        and the camera corrections."""
+        state = self.ekf.state.copy()
+        lb = self.live_burst
+        if lb is None:
+            return state
+
+        elapsed = self.now_sec() - lb.start_time
+        if elapsed > lb.duration + END_MESSAGE_GRACE:
+            if not lb.expired:
+                lb.expired = True
+                self.get_logger().warning(
+                    "burst end message is overdue; live pose is no longer extrapolated")
+            return state
+
+        elapsed = min(max(elapsed, 0.0), lb.duration)
+        state, _, _ = self.ekf.pred_state(state, lb.v, lb.w, elapsed)
+        return state
+
+    def publish_live_pose(self):
+        x, y, theta = self.live_state()[:3]
+        msg = Pose2D()
+        msg.x, msg.y, msg.theta = float(x), float(y), float(theta)
+        self.live_pose_pub.publish(msg)
 
     def publish_pose(self, ok):
         """Send the robot pose and landmarks to movement control."""
