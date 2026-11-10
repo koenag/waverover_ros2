@@ -140,26 +140,26 @@ class SLAMNode(Node):
         if now is None:
             return
 
-        # Controller must publish effective v and omega AFTER motor saturation.
-        # Use callback receipt time as an approximate motor transition time.
+        # Get the v,w from movement_control
         new_command = (msg.twist.linear.x, msg.twist.angular.z)
         if not all(isfinite(v) for v in new_command):
             self.fail('invalid velocity command')
             return
 
+        # Run prediction (motion control only)
         self.predict_to(now)
         if self.failed:
             return
 
-        # === LOG ADDED: Print EKF state vector once per second ===
+        # Log the robot state
         if now - self.last_state_log >= NANOSECONDS:
             self.get_logger().info(
                 f"SLAM | EKF STATE: {np.round(self.ekf.state, 3)}"
             )
             self.last_state_log = now
-        # === END LOG ===
 
-        # Publish a live estimate at every timer tick, with or without tags.
+
+        # Send the new robot pose back (no landmarks)
         self.publish_pose(self.pose_pub)
 
         was_moving = self.command != ZERO_COMMAND
@@ -167,12 +167,13 @@ class SLAMNode(Node):
         self.command = new_command
         self.last_command_time = now  # Repeated commands are heartbeats.
 
+        # a new driving window starts
         if is_moving and not was_moving:
-            # A new motion burst begins; any earlier observation window ends.
             self.stop_time = None
             self.seen_frames.clear()
             # === LOG ADDED: motion prediction begins (no camera correction while moving) ===
             self.get_logger().info('SLAM | MOVING: estimating pose from velocity commands')
+
         elif was_moving and not is_moving:
             # Start ONE settle + observation window for this completed burst.
             # Repeated zero commands must not reset the start time.
@@ -192,15 +193,13 @@ class SLAMNode(Node):
         if self.segment_ready:
             return  # The next segment-ready pose has already been published.
 
-        # Camera processing may lag behind image capture. Both must fall in the
-        # stationary interval; a frame captured while driving is not valid.
+        # If the tag came in before/after the valid window (when the robot is stopped) ignore it
         valid_from = self.stop_time + round(SETTLE_TIME * NANOSECONDS)
         valid_until = valid_from + round(OBSERVATION_TIME * NANOSECONDS)
         if not valid_from <= now <= valid_until:
             return
 
-        # /tf may contain multiple tags from the SAME image. Group by stamp,
-        # and process each image only once (even if /tf republishes transforms).
+        # go through all tags sent by /tf
         frames = {}
         for transform in msg.transforms:
             if transform.header.frame_id.lstrip('/') != CAMERA_FRAME:
@@ -209,6 +208,8 @@ class SLAMNode(Node):
             if match is None:
                 continue
 
+
+            # If the tag came in before/after the valid window (when the robot is stopped) ignore it
             stamp = transform.header.stamp
             capture_time = stamp.sec * NANOSECONDS + stamp.nanosec
             if not valid_from <= capture_time <= now:
@@ -216,28 +217,29 @@ class SLAMNode(Node):
             if capture_time in self.seen_frames:
                 continue
 
+            # Convert camera coords to robot world coords
             p = transform.transform.translation
             p_camera = np.array([p.x, p.y, p.z])
             if not np.all(np.isfinite(p_camera)) or p_camera[2] <= 0:
                 continue
 
-            # Convert 3D camera coordinates to the planar robot measurement.
             p_robot = self.camera_rotation @ p_camera + CAMERA_TRANSLATION
             if not np.all(np.isfinite(p_robot)):
                 continue
 
             tag_id = int(match.group(1))
-            # EKF uses this R during measurement correction (not prediction).
             frames.setdefault(capture_time, {})[tag_id] = TagObservation(
                 tag_id, p_robot[:2].copy(), MEASUREMENT_R.copy())
 
-        # Since the rover stayed still, a valid image can be applied now;
-        # no delayed-event buffer or EKF rollback is necessary.
+
+        # Go through all recorded tags and call EKF on each one independently (1 at a time)
         for capture_time, tags in sorted(frames.items()):
+            # First call predict to get the new robot pose (don't handle landmarks yet)
             self.predict_to(now)
             if self.failed:
                 return
-            # === LOG ADDED: distinguish new landmarks from existing pose references ===
+
+            # LOGGING: not central to logic, prints which tags are new
             mapped_before = set(self.ekf.get_landmarks())
             pose_before = np.array(self.ekf.get_robot_pose())
             new_ids = sorted(set(tags) - mapped_before)
@@ -245,9 +247,10 @@ class SLAMNode(Node):
             if new_ids:
                 self.get_logger().info(f'SLAM | NEW TAG(S): {new_ids} (not yet mapped)')
 
+            # sends tags to EKF (EKF already has the robot pose)
             self.ekf.process_observations(list(tags.values()))
 
-            # === LOG ADDED: show tags passed to EKF and resulting pose correction ===
+            # LOGGING: not central to logic, print where the robot is and what new IDS were added
             pose_after = np.array(self.ekf.get_robot_pose())
             added_ids = sorted(set(self.ekf.get_landmarks()) - mapped_before)
             self.get_logger().info(
@@ -265,13 +268,13 @@ class SLAMNode(Node):
         if now is None:
             return
 
-        # Missing command heartbeats during movement means true motion is
-        # unknown; do not silently assume the motor hardware stopped.
+        # Has to get a velocity every COMMAND_TIMEOUT milliseconds and if it hasn't gotten it yet return (that means there's a delay in movement_control sending v,w)
         if (self.command != ZERO_COMMAND and self.last_command_time is not None
                 and now - self.last_command_time > COMMAND_TIMEOUT * NANOSECONDS):
             self.fail('missing velocity command heartbeat')
             return
 
+        # run motion control, no landmarks
         self.predict_to(now)
         if self.failed:
             return
@@ -279,8 +282,7 @@ class SLAMNode(Node):
         # Publish a live estimate at every timer tick, with or without tags.
         self.publish_pose(self.pose_pub)
 
-        # The pose is also published once as "ready" after the observation
-        # window ends, even if zero tags were detected. No search is needed.
+        # Once the time window to process landmarks ends, publish the pose to the robot
         if (self.command == ZERO_COMMAND and self.stop_time is not None
                 and not self.segment_ready
                 and now >= self.stop_time + (SETTLE_TIME + OBSERVATION_TIME) * NANOSECONDS):
