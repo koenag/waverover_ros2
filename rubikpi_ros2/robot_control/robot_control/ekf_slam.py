@@ -154,12 +154,6 @@ class EKFSLAM:
         self.P = 0.5 * (self.P + self.P.T)
         return UpdateResult(accepted=True, residual=residual)
 
-    # Original public methods, retained for compatibility.
-    def measurement_model(self, tag_id):
-        return self.calculate_z_pred_and_H(tag_id)[0]
-
-    def measurement_jacobian(self, tag_id):
-        return self.calculate_z_pred_and_H(tag_id)[1]
 
     def process_observation(self, tag_id, z, R):
         try:
