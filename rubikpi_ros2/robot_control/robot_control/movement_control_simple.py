@@ -84,6 +84,10 @@ class MovementController(Node):
         self.create_timer(CALLBACK_FREQUENCY, self.move)
         self.create_timer(REPORT_PERIOD, self.report_position_history)
 
+        #trajerctory tracking
+        self.trajectories = [[(0.0, 0.0, 0.0)]]
+        self.position_history = []
+
         self.get_logger().info(
             f'[START] {len(self.waypoints)} waypoints | '
             f'drive={DRIVE_SPEED:.2f} m/s | turn={TURN_SPEED:.2f} rad/s')
@@ -91,6 +95,7 @@ class MovementController(Node):
     def update_pose(self, msg):
         """Record the live EKF estimate, including prediction-only updates."""
         self.pose = (msg.x, msg.y, msg.theta)
+        self.trajectories[-1].append(self.pose)
 
     def update_segment_pose(self, msg):
         """Receive the final pose for a completed movement burst."""
@@ -240,6 +245,9 @@ class MovementController(Node):
                     self.waypoint_index + 1
                 ) % len(self.waypoints)
 
+                if self.waypoint_index == 0:
+                    self.trajectories.append([self.pose])
+
                 # Reset the position latch for the next waypoint.
                 self.position_reached = False
 
@@ -271,6 +279,18 @@ class MovementController(Node):
                 min(distance_remaining, MAX_DRIVE_SEGMENT),
                 'DRIVE'
             )
+    def save_trajectories(self):
+        with open('robot_trajectories.txt', 'w') as file:
+            for loop_number, trajectory in enumerate(self.trajectories, 1):
+                if not trajectory:
+                    continue
+
+                file.write(f'LOOP {loop_number}\n')
+
+                for x, y, theta in trajectory:
+                    file.write(f'{x:.4f}, {y:.4f}, {theta:.4f}\n')
+
+                file.write('\n')
 
 
 def main(args=None):
@@ -281,10 +301,13 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.command(0.0, 0.0)
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+        try:
+            node.save_trajectories()
+        finally:
+            node.command(0.0, 0.0)
+            node.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
 
 
 if __name__ == '__main__':
