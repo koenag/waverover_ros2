@@ -94,13 +94,7 @@ class SLAMNode(Node):
         self.create_timer(TIMER_PERIOD, self.timer_callback)
 
     def now(self):
-        """Get ROS time in nanoseconds, checking for a backwards clock jump."""
-        t = self.clock.now().nanoseconds
-        if t <= 0:
-            return None  # In simulation, /clock may not have started.
-        if self.ekf_time is not None and t < self.ekf_time:
-            self.fail('ROS clock moved backwards')
-            return None
+        t = self.get_clock().now().nanoseconds
         if self.ekf_time is None:
             self.ekf_time = t
         return t
@@ -174,13 +168,14 @@ class SLAMNode(Node):
 
     def camera_callback(self, msg):
         """Use only camera frames CAPTURED during a settled stationary period."""
+        if self.failed or self.command != ZERO_COMMAND or self.stop_time is None or self.segment_ready:
+            return
+
+        now = self.now()
+        if now is None:
+            return
         if self.failed:
             return
-        now = self.now()
-        if now is None or self.command != ZERO_COMMAND or self.stop_time is None:
-            return
-        if self.segment_ready:
-            return  # The next segment-ready pose has already been published.
 
         # Camera processing may lag behind image capture. Both must fall in the
         # stationary interval; a frame captured while driving is not valid.
