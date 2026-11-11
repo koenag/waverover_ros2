@@ -56,7 +56,7 @@ class MovementController(Node):
             Pose2D, '/slam/segment_pose', self.update_segment_pose, 10)
 
         # Preserve the existing waypoint format: x, y, theta per line.
-        with open('./waypoint_3_square.txt') as file:
+        with open('./waypoint_3_octagon.txt') as file:
             self.waypoints = [
                 (x + OFFSET[0], y + OFFSET[1], wrap_angle(theta + OFFSET[2]))
                 for line in file if line.strip()
