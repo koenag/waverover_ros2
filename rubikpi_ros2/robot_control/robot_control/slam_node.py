@@ -239,24 +239,52 @@ class SLAMNode(Node):
             self.predict_to(now)
             if self.failed:
                 return
-            # === LOG ADDED: distinguish new landmarks from existing pose references ===
-            mapped_before = set(self.ekf.get_landmarks())
-            pose_before = np.array(self.ekf.get_robot_pose())
-            new_ids = sorted(set(tags) - mapped_before)
-            known_ids = sorted(set(tags) & mapped_before)
-            if new_ids:
-                self.get_logger().info(f'SLAM | NEW TAG(S): {new_ids} (not yet mapped)')
-
-            self.ekf.process_observations(list(tags.values()))
 
             # === LOG ADDED: show tags passed to EKF and resulting pose correction ===
-            pose_after = np.array(self.ekf.get_robot_pose())
-            added_ids = sorted(set(self.ekf.get_landmarks()) - mapped_before)
+            # Estimates before EKF update
+            pose_before = self.ekf.get_robot_pose()
+            landmarks_before = {
+                tag_id: position
+                for tag_id, (position, _) in self.ekf.get_landmarks().items()
+            }
+
+            # Apply EKF updates
+            results = self.ekf.process_observations(list(tags.values()))
+
+            # Estimates after EKF update
+            pose_after = self.ekf.get_robot_pose()
+            landmarks_after = {
+                tag_id: position
+                for tag_id, (position, _) in self.ekf.get_landmarks().items()
+            }
+
+            # Robot pose correction
+            delta = pose_after - pose_before
+            delta[2] = self.ekf.wrap_angle(delta[2])
+
             self.get_logger().info(
-                f'SLAM | EKF OBSERVATION: known={known_ids}, new={new_ids}, '
-                f'mapped={added_ids} | pose '
-                f'{np.round(pose_before, 3)} -> {np.round(pose_after, 3)}'
+                f'SLAM | ROBOT UPDATE: '
+                f'dx={delta[0]:+.4f} m, '
+                f'dy={delta[1]:+.4f} m, '
+                f'dtheta={np.degrees(delta[2]):+.2f} deg'
             )
+
+            # Landmark corrections
+            for tag_id, position in landmarks_after.items():
+                if tag_id not in landmarks_before:
+                    self.get_logger().info(
+                        f'SLAM | TAG {tag_id} INITIALIZED: '
+                        f'({position[0]:.4f}, {position[1]:.4f})'
+                    )
+                else:
+                    change = position - landmarks_before[tag_id]
+
+                    self.get_logger().info(
+                        f'SLAM | TAG {tag_id} UPDATE: '
+                        f'dx={change[0]:+.4f} m, '
+                        f'dy={change[1]:+.4f} m, '
+                        f'distance={np.linalg.norm(change):.4f} m'
+                    )
             self.seen_frames.add(capture_time)
 
     def timer_callback(self):
