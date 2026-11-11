@@ -339,7 +339,7 @@ class MovementController(Node):
         plt.tight_layout()
 
         plt.savefig("robot_trajectories.png", dpi=300)
-        plt.show()
+        
 
 
 
@@ -362,3 +362,4 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
