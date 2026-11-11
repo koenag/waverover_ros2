@@ -279,6 +279,15 @@ class MovementController(Node):
                 min(distance_remaining, MAX_DRIVE_SEGMENT),
                 'DRIVE'
             )
+
+        self.get_logger().info(
+            f'[WP {self.waypoint_index}] '
+            f'position_reached={self.position_reached} '
+            f'distance={distance_remaining:.3f} '
+            f'heading_error={math.degrees(heading_error):+.1f}deg '
+            f'final_heading_error={math.degrees(final_heading_error):+.1f}deg'
+        )
+        
     def save_trajectories(self):
         with open('robot_trajectories.txt', 'w') as file:
             for loop_number, trajectory in enumerate(self.trajectories, 1):
