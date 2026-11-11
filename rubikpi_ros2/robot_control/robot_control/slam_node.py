@@ -347,6 +347,11 @@ class SLAMNode(Node):
                 f'SLAM | SEGMENT READY: pose={np.round(self.ekf.get_robot_pose(), 3)} '
                 f'| camera_frames_used={len(self.seen_frames)}'
             )
+        np.savetxt(
+            "slam_final_covariance.txt",
+            self.ekf.get_covariance_matrix(),
+            fmt="%.8f"
+        )
 
 
     def publish_pose(self, publisher):
@@ -379,7 +384,10 @@ def main(args=None):
         node = SLAMNode()
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
-        pass
+        if node is not None:
+            node.log_final_state()
+        else:
+            print("Node is None")
     finally:
         if node is not None:
             try:
