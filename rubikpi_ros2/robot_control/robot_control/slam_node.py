@@ -329,7 +329,7 @@ class SLAMNode(Node):
         publisher.publish(msg)
 
     def log_final_state(self):
-        state = self.ekf.get_state()
+        state = self.ekf.get_state_vector()
         covariance = self.ekf.get_covariance_matrix()
 
         self.get_logger().info(
