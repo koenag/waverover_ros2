@@ -327,7 +327,7 @@ class SLAMNode(Node):
         msg = Pose2D()
         msg.x, msg.y, msg.theta = float(x), float(y), float(theta)
         publisher.publish(msg)
-        
+
     def log_final_state(self):
         state = self.ekf.get_state()
         covariance = self.ekf.get_covariance_matrix()
@@ -338,7 +338,10 @@ class SLAMNode(Node):
             f'SLAM | FINAL COVARIANCE MATRIX:\n'
             f'{np.array2string(covariance, precision=5, suppress_small=True, threshold=np.inf)}\n'
             f'SLAM | TAG ORDER: {list(self.ekf.landmark_indices.keys())}'
+        
     )
+
+    
 
 def main(args=None):
     # A single-threaded executor avoids locks for this small node.

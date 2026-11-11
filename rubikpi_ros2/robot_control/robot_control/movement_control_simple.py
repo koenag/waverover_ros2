@@ -294,7 +294,6 @@ class MovementController(Node):
         self.plot_trajectories()
 
     def plot_trajectories(self):
-
         import matplotlib.pyplot as plt
         import matplotlib as mpl
 
@@ -317,11 +316,10 @@ class MovementController(Node):
         if current_loop:
             trajectories.append(current_loop)
 
-        # Plot every loop in a different color
         plt.figure(figsize=(8, 8))
         colors = mpl.colormaps["tab10"]
 
-
+        # Plot each loop in a different color
         for i, trajectory in enumerate(trajectories):
             x, y = zip(*trajectory)
 
@@ -329,6 +327,31 @@ class MovementController(Node):
             plt.plot(x, y, color=color, label=f"Loop {i + 1}", linewidth=2)
             plt.scatter(x[0], y[0], color=color, marker="o", s=40)
             plt.scatter(x[-1], y[-1], color=color, marker="x", s=60)
+
+        # Plot waypoints as large black dots
+        for i, waypoint in enumerate(self.waypoints):
+            wx, wy = waypoint[:2]
+
+            plt.scatter(
+                wx, wy,
+                color="black",
+                s=150,
+                marker="o",
+                edgecolors="white",
+                linewidths=1.5,
+                zorder=10,
+                label="Waypoints" if i == 0 else None
+            )
+
+            # Label waypoint numbers
+            plt.annotate(
+                str(i + 1),
+                (wx, wy),
+                xytext=(8, 8),
+                textcoords="offset points",
+                fontsize=10,
+                fontweight="bold"
+            )
 
         plt.xlabel("X (meters)")
         plt.ylabel("Y (meters)")
@@ -339,7 +362,7 @@ class MovementController(Node):
         plt.tight_layout()
 
         plt.savefig("robot_trajectories.png", dpi=300)
-        
+        plt.close()
 
 
 
