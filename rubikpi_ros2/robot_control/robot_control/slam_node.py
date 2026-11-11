@@ -327,7 +327,18 @@ class SLAMNode(Node):
         msg = Pose2D()
         msg.x, msg.y, msg.theta = float(x), float(y), float(theta)
         publisher.publish(msg)
+        
+    def log_final_state(self):
+        state = self.ekf.get_state()
+        covariance = self.ekf.get_covariance_matrix()
 
+        self.get_logger().info(
+            f'\nSLAM | FINAL STATE:\n'
+            f'{np.array2string(state, precision=5, suppress_small=True)}\n'
+            f'SLAM | FINAL COVARIANCE MATRIX:\n'
+            f'{np.array2string(covariance, precision=5, suppress_small=True, threshold=np.inf)}\n'
+            f'SLAM | TAG ORDER: {list(self.ekf.landmark_indices.keys())}'
+    )
 
 def main(args=None):
     # A single-threaded executor avoids locks for this small node.
@@ -340,7 +351,11 @@ def main(args=None):
         pass
     finally:
         if node is not None:
-            node.destroy_node()
+            try:
+                node.log_final_state()
+            finally:
+                node.destroy_node()
+
         if rclpy.ok():
             rclpy.shutdown()
 

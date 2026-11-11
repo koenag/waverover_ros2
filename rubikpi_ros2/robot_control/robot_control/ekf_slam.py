@@ -236,6 +236,12 @@ class EKFSLAM:
     def get_robot_covariance(self):
         return self.P[:3, :3].copy()
 
+    def get_covariance_matrix(self):
+        return self.P
+
+    def get_state_vector(self):
+        return self.state
+
     def get_landmarks(self):
         return {
             tag_id: (self.state[i:i + 2].copy(), self.P[i:i + 2, i:i + 2].copy())
