@@ -11,8 +11,7 @@ from tf2_msgs.msg import TFMessage
 
 from .ekf_slam import EKFSLAM, MotionNoise, TagObservation
 
-
-# Calibrate these values separately
+# Q values
 MOTION_NOISE = MotionNoise(
     q_d_per_m=0.001,
     q_d_per_rad=0.0002,
@@ -20,22 +19,18 @@ MOTION_NOISE = MotionNoise(
     q_theta_per_rad=0.004,
 )
 
-# R IS a fixed 2x2 covariance for [tag_forward, tag_left], in meters squared.
-# Replace with the matrix computed from stationary AprilTag measurements.
+# R values
 MEASUREMENT_R = np.array([
     [0.01, 0.0],
     [0.0, 0.01],
 ])
 
-# Timing values are initial choices; verify how long the rover actually coasts
-# and how long the camera detector takes to publish an image.
 TIMER_PERIOD = 0.05      # Publish continuous pose at 20 Hz.
 MAX_PREDICT_STEP = 0.05  # Keep individual motion integrations short.
 SETTLE_TIME = 0.3       # Wait for physical motion to stop.
 OBSERVATION_TIME = 0.5  # Accept stationary camera frames during this window.
 COMMAND_TIMEOUT = 0.3  # Only check heartbeats while a nonzero command is active.
 
-# The same calibration transform as the previous slam_node.py.
 CAMERA_TRANSLATION = np.array([0.095, 0.0, 0.127])
 CAMERA_RPY_DEG = (-80.0, 0.0, -90.0)
 CAMERA_FRAME = 'camera_frame'
@@ -50,11 +45,9 @@ class SLAMNode(Node):
         super().__init__('ekf_slam_node')
 
         # One EKF contains the robot pose, mapped landmarks, and full covariance.
-        # The EKF itself handles all mathematical prediction/correction steps.
         self.ekf = EKFSLAM(noise_config=MOTION_NOISE)
 
         # Current command and the time through which it has been integrated.
-        # Use ROS time for both command receipt and camera capture timestamps.
         self.clock = self.get_clock()
         self.last_ekf_time = None
         self.command = ZERO_COMMAND
@@ -62,17 +55,17 @@ class SLAMNode(Node):
         self.failed = False
 
         # Each moving -> stopped transition begins one observation cycle.
-        # At the end we publish ONE segment pose, with or without any tags.
+        # At the end we publish a segment pose, with or without any tags.
         self.robot_stop_time = None
         self.segment_ready = False
         self.seen_frames = set()
 
-        # === LOG ADDED: State vector logging timer ===
+        # === State vector logging timer ===
         self.last_state_log = 0
 
 
         # Transform from camera optical coordinates to rover coordinates.
-        # Robot axes: x forward, y left.  Keep the original calibrated values.
+        # Robot axes: x forward, y left.
         roll, pitch, yaw = map(radians, CAMERA_RPY_DEG)
         rx = np.array([[1, 0, 0], [0, cos(roll), -sin(roll)],
                        [0, sin(roll), cos(roll)]])
@@ -83,8 +76,6 @@ class SLAMNode(Node):
         self.camera_rotation = rz @ ry @ rx
         self.tag_pattern = re.compile(re.escape(TAG_FRAME_PREFIX) + r'(\d+)')
 
-        # Pose2D is sufficient for the movement controller (x, y, theta).
-        # Float32MultiArray contains [tag_id, x, y] triples for debugging.
         self.pose_pub = self.create_publisher(Pose2D, '/slam/pose', 10)
         self.segment_pose_pub = self.create_publisher(Pose2D, '/slam/segment_pose', 10)
 
@@ -115,8 +106,7 @@ class SLAMNode(Node):
             self.fail('attempted to predict backward in time')
             return
 
-        # Integrate the real elapsed time, not a hard-coded timer interval.
-        # Splitting long intervals improves midpoint-integration accuracy.
+        # Integrate the real elapsed time (with shorter intervals)
         max_step_ns = round(MAX_PREDICT_STEP * NANOSECONDS)
         while self.last_ekf_time < timestamp:
             step = min(timestamp - self.last_ekf_time, max_step_ns)
@@ -131,7 +121,7 @@ class SLAMNode(Node):
         if now is None:
             return
 
-        # Controller must publish effective v and omega AFTER motor saturation.
+        # Controller must publish effective v and omega.
         # Use callback receipt time as an approximate motor transition time.
         new_command = (msg.twist.linear.x, msg.twist.angular.z)
         if not all(isfinite(v) for v in new_command):
@@ -196,8 +186,7 @@ class SLAMNode(Node):
         if not observation_window_open:
             return
 
-        # /tf may contain multiple tags from the SAME image. Group by stamp,
-        # and process each image only once (even if /tf republishes transforms).
+        # Process each tag once per capture time, ignoring duplicates and invalid frames.
         frames = {}
         for transform in msg.transforms:
             if transform.header.frame_id.lstrip('/') != CAMERA_FRAME:
@@ -233,14 +222,13 @@ class SLAMNode(Node):
             frames.setdefault(capture_time, {})[tag_id] = TagObservation(
                 tag_id, p_robot[:2].copy(), MEASUREMENT_R.copy())
 
-        # Since the rover stayed still, a valid image can be applied now;
-        # no delayed-event buffer or EKF rollback is necessary.
+        # Since the rover stayed still, a valid image can be applied now
         for capture_time, tags in sorted(frames.items()):
             self.predict_to(now)
             if self.failed:
                 return
 
-            # === LOG ADDED: show tags passed to EKF and resulting pose correction ===
+            # === Show tags passed to EKF and resulting pose correction ===
             # Estimates before EKF update
             pose_before = self.ekf.get_robot_pose()
             landmarks_before = {
@@ -295,8 +283,7 @@ class SLAMNode(Node):
         if now is None:
             return
 
-        # Missing command heartbeats during movement means true motion is
-        # unknown; do not silently assume the motor hardware stopped.
+        # Missing command heartbeats during movement means true motion is unknown
         command_timed_out = (
             self.command != ZERO_COMMAND
             and self.last_command_time is not None
@@ -311,7 +298,7 @@ class SLAMNode(Node):
         if self.failed:
             return
 
-        # === LOG ADDED: Print complete EKF state once per second, even while stopped ===
+        # === Print complete EKF state once per second, even while stopped ===
         if now - self.last_state_log >= NANOSECONDS:
             tmp_x, tmp_y, tmp_theta = self.ekf.get_robot_pose()
 
@@ -325,13 +312,12 @@ class SLAMNode(Node):
                 f'LANDMARKS: {", ".join(landmarks) if landmarks else "None"}'
             )
             self.last_state_log = now
-        # === END LOG ===
 
         # Publish a live estimate at every timer tick, with or without tags.
         self.publish_pose(self.pose_pub)
 
-        # The pose is also published once as "ready" after the observation
-        # window ends, even if zero tags were detected. No search is needed.
+        # The pose is also published once after the observation
+        # window ends, even if zero tags were detected. No search for tags.
         segment_ready_to_publish = (
             self.command == ZERO_COMMAND
             and self.robot_stop_time is not None
@@ -342,7 +328,7 @@ class SLAMNode(Node):
         if segment_ready_to_publish:
             self.segment_ready = True
             self.publish_pose(self.segment_pose_pub)
-            # === LOG ADDED: final pose handed to the controller after this stop ===
+            # === Final pose handed to the controller after this stop ===
             self.get_logger().info(
                 f'SLAM | SEGMENT READY: pose={np.round(self.ekf.get_robot_pose(), 3)} '
                 f'| camera_frames_used={len(self.seen_frames)}'

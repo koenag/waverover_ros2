@@ -25,7 +25,6 @@ REPORT_PERIOD = 0.5              # seconds between trajectory samples
 WAYPOINT_PAUSE = 1.0             # optional pause when a waypoint is reached
 
 # EKF-SLAM defines the starting robot pose as (0, 0, 0).
-# Only use a nonzero offset if the waypoint file explicitly requires it.
 OFFSET = (0.0, 0.0, 0.0)
 
 
@@ -39,18 +38,18 @@ class MovementController(Node):
         super().__init__('movement_controller_node')
 
         # The motor topic remains unchanged. SLAM additionally receives the
-        # effective v/omega AFTER motor commands have been limited to +/-0.5.
+        # effective v/omega after motor commands have been limited to +/-0.5.
         self.motor_pub = self.create_publisher(
             Float32MultiArray, 'motor_commands', 10)
         self.velocity_pub = self.create_publisher(
             TwistStamped, '/slam/cmd_velocity', 10)
 
         # /slam/pose is the continuously predicted EKF estimate. It is used to
-        # start navigation and to display the current position, NOT to decide
+        # start navigation and to display the current position, not to decide
         # when a finished movement burst is ready for another one.
         self.create_subscription(Pose2D, '/slam/pose', self.update_pose, 10)
 
-        # /slam/segment_pose is emitted ONCE after each stop's observation
+        # /slam/segment_pose is emitted once after each stop's observation
         # window. It arrives even if the camera never detects an AprilTag.
         self.create_subscription(
             Pose2D, '/slam/segment_pose', self.update_segment_pose, 10)
@@ -84,7 +83,7 @@ class MovementController(Node):
         self.create_timer(CALLBACK_FREQUENCY, self.move)
         self.create_timer(REPORT_PERIOD, self.report_position_history)
 
-        #trajerctory tracking
+        #trajectory tracking
         self.trajectories = [[(0.0, 0.0, 0.0)]]
         self.position_history = []
 
@@ -99,8 +98,8 @@ class MovementController(Node):
 
     def update_segment_pose(self, msg):
         """Receive the final pose for a completed movement burst."""
-        # A segment-ready message is only useful after OUR movement has stopped.
-        # This also ignores the original startup pose on the continuous topic.
+        # A segment-ready message is only useful after our movement has stopped.
+        # Ignores the original startup pose on the continuous topic (/pose).
         if not self.waiting_for_segment:
             return
 
@@ -164,8 +163,8 @@ class MovementController(Node):
         """Move, wait for a finalized EKF pose, then plan the next burst."""
         now = time.monotonic()
 
-        # 1. During a movement burst, repeat the command at 20 Hz.
-        #    At the scheduled end, STOP and wait for SLAM's segment pose.
+        # During a movement burst, repeat the command at 20 Hz.
+        # At the scheduled end, STOP and wait for SLAM's segment pose.
         if self.movement is not None:
             v, omega, effective_v, effective_omega, start, duration, description = self.movement
             if now - start < duration:
@@ -181,8 +180,8 @@ class MovementController(Node):
                 f'[MOVE END] {description} | waiting for EKF segment pose')
             return
 
-        # 2. After stopping, keep sending zero heartbeats until SLAM completes
-        #    its settle + camera-observation window. This is NOT a tag search.
+        # After stopping, keep sending zero heartbeats until SLAM completes
+        # its settle + camera-observation window. This is NOT a tag search.
         if self.waiting_for_segment:
             self.command(0.0, 0.0)
             if not self.segment_pose_ready:
@@ -194,17 +193,17 @@ class MovementController(Node):
             self.segment_pose_ready = False
             self.waiting_for_segment = False
 
-        # 3. Preserve the optional short pause on completed waypoints.
+        # Preserve the optional short pause on completed waypoints.
         if now < self.pause_until:
             self.command(0.0, 0.0)
             return
 
-        # 4. Wait for SLAM's initial pose instead of requiring a first tag.
+        # Wait for SLAM's initial pose instead of requiring a first tag.
         if self.pose is None:
             self.command(0.0, 0.0)
             return
 
-        # 5. Calculate the distance and direction to the current waypoint.
+        # Calculate the distance and direction to the current waypoint.
         x, y, theta = self.pose
         goal_x, goal_y, goal_theta = self.waypoints[self.waypoint_index]
 
