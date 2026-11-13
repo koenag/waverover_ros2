@@ -133,6 +133,7 @@ class SLAMNode(Node):
             return
 
         # Publish a live estimate at every timer tick, with or without tags.
+        self.get_logger().info(f"AT VELOCITY CHANGE: publishing pose as  {self.pose_pub}")
         self.publish_pose(self.pose_pub)
 
         was_moving = self.command != ZERO_COMMAND
@@ -267,12 +268,7 @@ class SLAMNode(Node):
                 else:
                     change = position - landmarks_before[tag_id]
 
-                    self.get_logger().info(
-                        f'SLAM | TAG {tag_id} UPDATE: '
-                        f'dx={change[0]:+.4f} m, '
-                        f'dy={change[1]:+.4f} m, '
-                        f'distance={np.linalg.norm(change):.4f} m'
-                    )
+                   
             self.seen_frames.add(capture_time)
 
     def timer_callback(self):
