@@ -133,7 +133,7 @@ class SLAMNode(Node):
             return
 
         # Publish a live estimate at every timer tick, with or without tags.
-        self.get_logger().info(f"AT VELOCITY CHANGE: publishing pose as  {self.pose_pub}")
+      
         self.publish_pose(self.pose_pub)
 
         was_moving = self.command != ZERO_COMMAND

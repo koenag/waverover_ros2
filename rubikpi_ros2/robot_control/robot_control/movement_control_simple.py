@@ -133,7 +133,7 @@ class MovementController(Node):
         velocity.header.stamp = self.get_clock().now().to_msg()
         velocity.twist.linear.x = float(effective_v)
         velocity.twist.angular.z = float(effective_omega)
-        self.get_logger().info(f"Changed command, sending L={effective_v} R={effective_omega} to SLAM")
+   
         self.velocity_pub.publish(velocity)
 
         return float(effective_v), float(effective_omega)
