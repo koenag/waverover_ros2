@@ -25,10 +25,9 @@ waverover_ros2/
     │       ├── motor_control.py               # Motor commands, serial communication
     │       ├── movement_control_simple.py     # Turtle graphics waypoint navigation
     │       ├── movement_control_quintic.py    # Quintic trajectory controller
-    │       ├── tag_localization.py            # AprilTag locations in camera coordinate system transforms to robot pose in world 
+    │       ├── tag_localization.py            # Converts AprilTag locations in camera coordinate system to world coordinates
     │       ├── slam_node.py                   # Slam node
     │       ├── ekf_slam.py                    # Performs EKF correction
-    coordinate system
     │       └── teleop_example.py
     ├── robot_launch/
     │   ├── package.xml
