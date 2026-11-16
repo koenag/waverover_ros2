@@ -10,8 +10,9 @@ from std_msgs.msg import Float32MultiArray
 
 # Existing motor calibration: [v, omega] = A @ [left, right].
 CALIBRATION_MATRIX = np.array([
-    [0.565034, 0.733764],
-    [-4.08242, 3.82298],
+    [1.235, 0.105],
+    [-3.95, 4.1314],
+
 ])
 
 MAX_MOTOR_COMMAND = 0.5
