@@ -65,8 +65,8 @@ class MovementController(Node):
                     for x, y, theta in [map(float, line.split(','))]
             ]'''
         self.pathplanning = PathPlan()
-        self.waypoints = self.pathplanning.get_shortest_path()
-        # self.waypoints = self.pathplanning.get_max_safety()
+        # self.waypoints = self.pathplanning.get_shortest_path()
+        self.waypoints = self.pathplanning.get_max_safety()
 
         self.waypoint_index = 1  # Waypoint 0 is the starting position
         self.pose = None
