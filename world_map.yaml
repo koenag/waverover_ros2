@@ -15,12 +15,17 @@ landmarks:
   8: [1.65, 0.0]
   9: [0.5, 0.0]
 
+# Bottom Right: (1m, 1m)
+# Bottom Left: (1m, 1.47m)
+# Top Right: (1.35m, 1m)
+# Top Left: (1.35m, 1.47m)
+
 obstacle:
   vertices:
     - [1.0, 1.0]
-    - [1.1, 1.5]
-    - [1.5, 1.5]
-    - [1.5, 1.0]
+    - [1.0, 1.47]
+    - [1.35, 1.47]
+    - [1.35, 1.0]
 
 robot:
   radius: 0.10
