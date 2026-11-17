@@ -7,7 +7,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Pose2D
 from std_msgs.msg import Float32MultiArray
 
-
+from robot_control.path_planning import PathPlan
 # Motion settings
 INTRINSTIC_CALIBRATION_MATRIIX = np.array([
     [0.565034, 0.733764],
@@ -54,7 +54,7 @@ class MovementController(Node):
         self.create_subscription(
             Pose2D, '/robot_pose', self.update_pose, 10)
        
-        with open('./waypoint_2.txt') as file:
+        '''with open('./waypoint_2.txt') as file:
             self.waypoints = [
                 (
                     x + OFFSET[0],
@@ -63,7 +63,10 @@ class MovementController(Node):
                 )
                 for line in file if line.strip()
                     for x, y, theta in [map(float, line.split(','))]
-            ]
+            ]'''
+        self.pathplanning = PathPlan()
+        self.waypoints = self.pathplanning.get_shortest_path()
+        # self.waypoints = self.pathplanning.get_max_safety()
 
         self.waypoint_index = 1  # Waypoint 0 is the starting position
         self.pose = None
@@ -87,6 +90,8 @@ class MovementController(Node):
         self.position_history = [OFFSET]
         self.position_estimate= OFFSET
         self.create_timer(REPORT_PERIOD, self.report_position_history)
+
+        
 
         # LOG: Controller initialization
         self.get_logger().info(
