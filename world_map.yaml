@@ -26,5 +26,5 @@ robot:
   radius: 0.10
   tolerance: 0.05
 
-start: [0.2, 0.2]
-goal: [1.8, 1.8]
+start: [0.5, 0.5]
+goal: [2.0, 2.5]
