@@ -154,7 +154,24 @@ class PathPlan:
                     path.append(current)
                     current = parent[current]
 
-                return path[::-1]
+                path.reverse()
+
+                # Calculate heading toward the next waypoint
+                waypoints = []
+
+                for i in range(len(path) - 1):
+                    x, y = path[i]
+                    next_x, next_y = path[i + 1]
+
+                    theta = math.atan2(next_y - y, next_x - x)
+                    waypoints.append((x, y, theta))
+
+                # Final waypoint retains the previous heading
+                x, y = path[-1]
+                theta = waypoints[-1][2] if waypoints else 0.0
+                waypoints.append((x, y, theta))
+
+                return waypoints
 
             for neighbor, weight in adj_list[current]:
 
