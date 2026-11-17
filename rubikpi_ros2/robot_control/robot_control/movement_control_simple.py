@@ -65,8 +65,8 @@ class MovementController(Node):
                     for x, y, theta in [map(float, line.split(','))]
             ]'''
         self.pathplanning = PathPlan()
-        # self.waypoints = self.pathplanning.get_shortest_path()
-        self.waypoints = self.pathplanning.get_max_safety()
+        self.waypoints = self.pathplanning.get_shortest_path()
+        # self.waypoints = self.pathplanning.get_max_safety()
 
         self.waypoint_index = 1  # Waypoint 0 is the starting position
         self.pose = None
@@ -208,9 +208,9 @@ class MovementController(Node):
         # All waypoints completed.
         if self.waypoint_index >= len(self.waypoints):
             self.command(0.0, 0.0)
-            self.get_logger().info(f"LINEAR DISTANCE TRAVELLED: {self.total_linear_distance_travelled}")
-            self.get_logger().info(f"ANGULAR DISTANCE TRAVELLED: {self.total_angular_distance_travelled}")
-            self.get_logger().info(f"2D TRAJECTORY HISTORY: {self.position_history}")
+            # self.get_logger().info(f"LINEAR DISTANCE TRAVELLED: {self.total_linear_distance_travelled}")
+            # self.get_logger().info(f"ANGULAR DISTANCE TRAVELLED: {self.total_angular_distance_travelled}")
+            # self.get_logger().info(f"2D TRAJECTORY HISTORY: {self.position_history}")
             
             return
 
