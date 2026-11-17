@@ -4,7 +4,7 @@ from itertools import combinations
 import yaml
 
 
-config_path = 'world_map.yaml'
+config_path = './world_map.yaml'
 class PathPlan:
     def __init__(self):
         with open(config_path, "r") as file:
