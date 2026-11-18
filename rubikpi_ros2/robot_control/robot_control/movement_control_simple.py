@@ -91,7 +91,8 @@ class MovementController(Node):
         self.position_estimate= OFFSET
         self.create_timer(REPORT_PERIOD, self.report_position_history)
 
-        
+        self.position_reached = False
+
 
         # LOG: Controller initialization
         self.get_logger().info(
@@ -162,61 +163,57 @@ class MovementController(Node):
         )
 
     def move(self):
-        '''
-        Perform bursts of 'open-loop' movement before checking position and heading with an April Tag in view
-        '''
-        
+        """Run short open-loop movements, then wait for a new localization pose."""
         now = time.monotonic()
+
         if self.pause_until and now < self.pause_until:
             self.command(0.0, 0.0)
             return
 
-        # perform a burst of movement, don't respond to an April Tag in this time
-        # if reached the end of the movement (based on time) stop movement and record the last post time used
-        # otherwise enforce the speeds
         if self.movement:
-            linear_speed, angular_speed, angular_rotation, movement_start_time, duration, starting_pose, movement_description = self.movement
-            
+            (
+                linear_speed,
+                angular_speed,
+                actual_linear,
+                actual_angular,
+                movement_start_time,
+                duration,
+                starting_pose,
+                movement_description,
+            ) = self.movement
+
             if now < movement_start_time + duration:
                 self.command(linear_speed, angular_speed)
                 return
-            
-            expected_linear_distance_travelled = linear_speed * duration
-            expected_angular_distance_travelled = angular_rotation * ROBOT_RADIUS
-            self.total_linear_distance_travelled += expected_linear_distance_travelled 
-            self.total_angular_distance_travelled  += expected_angular_distance_travelled
-            
-            # Update position estimate based on the last known position and the expected distance travelled
-            self.position_estimate = (starting_pose[0] + expected_linear_distance_travelled * math.cos(self.position_history[-1][2]),
-                                       starting_pose[1] + expected_linear_distance_travelled * math.sin(self.position_history[-1][2]),
-                                       starting_pose[2] + angular_speed * duration)
-            
-        
 
             self.command(0.0, 0.0)
+
+            distance = actual_linear * duration
+            heading_change = actual_angular * duration
+            start_x, start_y, start_heading = starting_pose
+
+            self.total_linear_distance_travelled += abs(distance)
+            self.total_angular_distance_travelled += abs(heading_change)
+            self.position_estimate = (
+                start_x + distance * math.cos(start_heading),
+                start_y + distance * math.sin(start_heading),
+                wrap_angle(start_heading + heading_change),
+            )
+
             self.movement = None
             self.used_pose_time = self.pose_time
             self.search = None
 
-            # LOG: Movement completed
             self.get_logger().info(
                 f'[MOVE END] {movement_description} completed | '
-                f'Waiting for a new AprilTag pose'
+                'Waiting for a new AprilTag pose'
             )
             return
 
-        # All waypoints completed.
         if self.waypoint_index >= len(self.waypoints):
             self.command(0.0, 0.0)
-            # self.get_logger().info(f"LINEAR DISTANCE TRAVELLED: {self.total_linear_distance_travelled}")
-            # self.get_logger().info(f"ANGULAR DISTANCE TRAVELLED: {self.total_angular_distance_travelled}")
-            # self.get_logger().info(f"2D TRAJECTORY HISTORY: {self.position_history}")
-            
             return
 
-        # once you're done with the movement check for repositioning if you can see an april tag / have gotten a new one
-
-        # Handles case where you knew where you were at a previous time step and you got a new april tag input (ie you can determine your new location)
         if self.pose is not None and self.pose_time > self.used_pose_time:
             self.used_pose_time = self.pose_time
             self.search = None
@@ -228,11 +225,10 @@ class MovementController(Node):
             dy = goal_y - current_y
             distance_remaining = math.hypot(dx, dy)
 
-            desired_heading_to_reach_eos = math.atan2(dy, dx)
-            heading_error = wrap_angle(desired_heading_to_reach_eos - current_heading)
+            desired_heading = math.atan2(dy, dx)
+            heading_error = wrap_angle(desired_heading - current_heading)
             final_heading_error = wrap_angle(goal_heading - current_heading)
 
-            # LOG: Current pose and target waypoint
             self.get_logger().info(
                 f'[POSE] WP {self.waypoint_index} | '
                 f'Robot=({current_x:.3f}, {current_y:.3f}, '
@@ -241,148 +237,85 @@ class MovementController(Node):
                 f'{math.degrees(goal_heading):+.1f}deg)'
             )
 
-            # LOG: Distance and heading errors used for planning
             self.get_logger().info(
                 f'[ERROR] Distance={distance_remaining:.3f}m | '
-                f'Desired direction={math.degrees(desired_heading_to_reach_eos):+.1f}deg | '
+                f'Desired direction={math.degrees(desired_heading):+.1f}deg | '
                 f'Heading error={math.degrees(heading_error):+.1f}deg | '
                 f'Final heading error={math.degrees(final_heading_error):+.1f}deg'
             )
 
-            # First check if you're close to the end of the segment in distance, then in heading.
-            # --> If you're close enough in both, mark the waypoint as complete and move to the next one. 
-            # --> If you're close in distance but not heading, turn to correct your heading. 
-            # --> If you're not close in distance but are facing the right way, drive forward. 
-            # --> If you're not facing the right way, turn to correct your heading.
             if distance_remaining <= POSITION_TOLERANCE:
-                # reached the end of segment and either need to turn that final rotation (in which case turn)
-                # or are within heading tolerance in which case mark this segment as done
+                self.position_reached = True
+
+            self.get_logger().info(
+                f'[WP {self.waypoint_index}] '
+                f'position_reached={self.position_reached} '
+                f'distance={distance_remaining:.3f} '
+                f'heading_error={math.degrees(heading_error):+.1f}deg '
+                f'final_heading_error={math.degrees(final_heading_error):+.1f}deg'
+            )
+
+            if self.position_reached:
                 if abs(final_heading_error) <= HEADING_TOLERANCE:
-
-                    # LOG: Waypoint successfully completed
+                    self.command(0.0, 0.0)
                     self.get_logger().info(
-                        f'[WAYPOINT REACHED] {self.waypoint_index} | '
-                        f'Position error={distance_remaining:.3f}m | '
-                        f'Heading error={math.degrees(final_heading_error):+.1f}deg'
+                        f'[WAYPOINT REACHED] {self.waypoint_index}'
                     )
-                    self.pause_until = time.monotonic() + 1.0
                     self.waypoint_index += 1
-
-                    if self.waypoint_index < len(self.waypoints):
-                       
-                        self.get_logger().info(
-                            f'[NEXT WAYPOINT] Moving to WP {self.waypoint_index}: '
-                            f'{self.waypoints[self.waypoint_index]}'
-                        )
-                    else:
-                        # LOG: Navigation finished
-                        self.get_logger().info(
-                            '[DONE] All waypoints completed'
-                        )
-
+                    self.position_reached = False
                 else:
-                    # LOG: Position reached, but final heading is incorrect
-                    self.get_logger().info(
-                        f'[DECISION] FINAL TURN | '
-                        f'Position reached, correcting heading by '
-                        f'{math.degrees(final_heading_error):+.1f}deg'
-                    )
-
                     self.create_movement(
                         0.0,
                         math.copysign(TURN_SPEED, final_heading_error),
-
-                        abs(final_heading_error), self.pose,'FINAL TURN'
+                        abs(final_heading_error),
+                        self.pose,
+                        'FINAL TURN',
                     )
-
-            # not in the right position and are facing the wrong way, in which case rotate along
-            # the error to correct your heading
             elif abs(heading_error) > HEADING_TOLERANCE:
-
-                # LOG: Robot must align with target before driving
-                self.get_logger().info(
-                    f'[DECISION] TURN | '
-                    f'Heading error={math.degrees(heading_error):+.1f}deg | '
-                    f'Direction={"LEFT/CCW" if heading_error > 0 else "RIGHT/CW"}'
-                )
-
                 self.create_movement(
                     0.0,
                     math.copysign(TURN_SPEED, heading_error),
-                    
-                    abs(heading_error),self.pose, 'TURN'
+                    abs(heading_error),
+                    self.pose,
+                    'TURN',
                 )
-
-            # facing the right way, but not yet reached the end of the segment, in which case keep moving forward
             else:
-                # Slow down when approaching the waypoint.
-                speed = DRIVE_SPEED
-
-                # LOG: Robot aligned sufficiently to drive
-                self.get_logger().info(
-                    f'[DECISION] DRIVE | '
-                    f'Distance={distance_remaining:.3f}m | '
-                    f'Speed={speed:.3f}m/s | '
-                    f'Heading error={math.degrees(heading_error):+.1f}deg'
-                )
-
                 self.create_movement(
-                    speed,
+                    DRIVE_SPEED,
                     0.0,
                     min(distance_remaining, MAX_DRIVE_SEGMENT),
                     self.pose,
-                    'DRIVE'
+                    'DRIVE',
                 )
 
             return
 
-        # No new pose: stop while waiting for localization.
-        self.command(0.0, 0.0)
+        # There is no new pose. Alternate between waiting and rotating.
+        if self.search is None:
+            self.search = ('INITIAL_PAUSE', now)
+            self.get_logger().warning(
+                '[SEARCH] No AprilTag pose available; starting search'
+            )
 
-        # last case, you don't see an april tag and/or don't know where you are. Solution: Rotate until you see a tag
-        if self.pose is None or self.pose_time <= self.used_pose_time:
-            
-            # Added a brief inital pause to handle any starting delays with launch files
-            if self.search is None:
-                self.search = ('INITIAL_PAUSE', now)
+        phase, start_time = self.search
+        elapsed = now - start_time
 
-                # LOG: Localization unavailable
-                self.get_logger().warning(
-                    '[SEARCH] No AprilTag pose available; starting search'
-                )
+        if phase == 'INITIAL_PAUSE' and elapsed >= SEARCH_INITIAL_PAUSE:
+            self.search = ('ROTATE', now)
+            self.get_logger().info('[SEARCH] Rotating LEFT/CCW to find AprilTag')
+        elif phase == 'ROTATE' and elapsed >= SEARCH_ROTATION_TIME:
+            self.search = ('PAUSE', now)
+            self.get_logger().info(
+                '[SEARCH] Rotation finished; waiting for AprilTag'
+            )
+        elif phase == 'PAUSE' and elapsed >= SEARCH_PAUSE:
+            self.search = ('ROTATE', now)
+            self.get_logger().info('[SEARCH] Still no AprilTag; rotating again')
 
-            phase, start_time = self.search
-            elapsed = now - start_time
-
-
-            # Can either be in a pause or rotate state. After being in one state for more than MACROS tiime, switch to the other state
-            if phase == 'INITIAL_PAUSE' and elapsed >= SEARCH_INITIAL_PAUSE:
-                self.search = ('ROTATE', now)
-
-                # LOG: Beginning search rotation
-                self.get_logger().info(
-                    '[SEARCH] Rotating LEFT/CCW to find AprilTag'
-                )
-
-            elif phase == 'ROTATE' and elapsed >= SEARCH_ROTATION_TIME:
-                self.search = ('PAUSE', now)
-
-                # LOG: Search rotation completed
-                self.get_logger().info(
-                    '[SEARCH] Rotation finished; waiting for AprilTag'
-                )
-
-            elif phase == 'PAUSE' and elapsed >= SEARCH_PAUSE:
-                self.search = ('ROTATE', now)
-
-                # LOG: Retrying localization search
-                self.get_logger().info(
-                    '[SEARCH] Still no AprilTag; rotating again'
-                )
-
-            # Do the rotation
-            if self.search[0] == 'ROTATE':
-                self.command(0.0, TURN_SPEED)
+        if self.search[0] == 'ROTATE':
+            self.command(0.0, TURN_SPEED)
+        else:
+            self.command(0.0, 0.0)
 
 
 def main(args=None):
