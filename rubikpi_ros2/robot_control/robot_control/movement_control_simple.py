@@ -141,7 +141,7 @@ class MovementController(Node):
         duration = amount / max(actual_speed, 1e-6)
         movement_start_time = time.monotonic()
         self.movement = (
-            linear_speed, angular_speed, actual_angular, movement_start_time, duration, starting_pose, movement_description)
+            linear_speed, angular_speed, actual_linear, actual_angular, movement_start_time, duration, starting_pose, movement_description)
 
         # LOG: Movement command and calibration output
         left, right = np.linalg.solve(
