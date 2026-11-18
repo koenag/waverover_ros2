@@ -212,6 +212,9 @@ class MovementController(Node):
 
         if self.waypoint_index >= len(self.waypoints):
             self.command(0.0, 0.0)
+            self.get_logger().info(f"Trajectory: {self.position_history}")
+            self.get_logger().info(f"Total linear distance travelled: {self.total_linear_distance_travelled}")
+            self.get_logger().info(f"Total angular distance travelled: {self.total_angular_distance_travelled}")
             return
 
         if self.pose is not None and self.pose_time > self.used_pose_time:
