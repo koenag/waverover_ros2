@@ -11,6 +11,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', ['launch/robot_teleop_launch.py']),
+        ('share/' + package_name + '/config', ['config/apriltag_map.yaml']),
     ],
     install_requires=[
         'setuptools',
