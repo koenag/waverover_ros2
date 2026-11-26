@@ -32,4 +32,4 @@ robot:
   tolerance: 0.00
 
 start: [0.5, 0.5]
-goal: [1.5, 2.0]
+goal: [2.0, 2.5]

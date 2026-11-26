@@ -56,19 +56,10 @@ class MovementController(Node):
         self.create_subscription(
             Pose2D, '/robot_pose', self.update_pose, 10)
        
-        '''with open('./waypoint_2.txt') as file:
-            self.waypoints = [
-                (
-                    x + OFFSET[0],
-                    y + OFFSET[1],
-                    theta + OFFSET[2]
-                )
-                for line in file if line.strip()
-                    for x, y, theta in [map(float, line.split(','))]
-            ]'''
+       
         self.pathplanning = PathPlan()
-        #self.waypoints = self.pathplanning.get_shortest_path()
-        self.waypoints = self.pathplanning.get_max_safety()
+        self.waypoints = self.pathplanning.get_shortest_path()
+        #self.waypoints = self.pathplanning.get_max_safety()
         self.get_logger().info(f"WAYPOINTS  = {self.waypoints}")
         self.waypoint_index = 1  # Waypoint 0 is the starting position
         self.pose = None
