@@ -12,6 +12,7 @@ from robot_control.path_planning import PathPlan
 INTRINSTIC_CALIBRATION_MATRIIX = np.array([
     [0.565034, 0.733764],
     [-4.08242, 3.82298]
+)]
 
 # Existing motor calibration: [v, omega] = A @ [left, right].
 CALIBRATION_MATRIX = np.array([
