@@ -26,6 +26,7 @@ waverover_ros2/
     │       ├── movement_control_simple.py     # Turtle graphics waypoint navigation
     │       ├── movement_control_quintic.py    # Quintic trajectory controller
     │       ├── tag_localization.py            # AprilTag locations in camera coordinate system transforms to robot pose in world coordinate system
+    │       ├── path_planning.py               # Creates the grid world and runs A* to find the min distance/max safety path. Instantiated by movement_control_simple
     │       └── teleop_example.py
     ├── robot_launch/
     │   ├── package.xml

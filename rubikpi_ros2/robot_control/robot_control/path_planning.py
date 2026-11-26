@@ -88,7 +88,7 @@ class PathPlan:
      
         # Extra offset prevents diagonal edges from
         # cutting through the expanded obstacle corners.
-        d = self.clearance 
+        d = 2*self.clearance 
 
         point_distance_from_corner = d*np.sin(math.pi/4)
         return [
@@ -198,14 +198,14 @@ class PathPlan:
         )
 
         return self.a_star(adj_list)
-# def main():
-#     pathplan = PathPlan()
-#     print("World coords ", pathplan.world)
-#     print("Box coords ", pathplan.box)
-#     print("Car radius ", pathplan.radius)
-#     print("Car offset ", pathplan.clearance)
-#     print("SP ", pathplan.shortest_vertices)
-#     print("MS ", pathplan.voronoi_vertices)
-#     print("Start ", pathplan.start)
-#     print("Goal ", pathplan.goal)
-# main()
+def main():
+    pathplan = PathPlan()
+    print("World coords ", pathplan.world)
+    print("Box coords ", pathplan.box)
+    print("Car radius ", pathplan.radius)
+    print("Car offset ", pathplan.clearance)
+    print("SP ", pathplan.shortest_vertices)
+    print("MS ", pathplan.voronoi_vertices)
+    print("Start ", pathplan.start)
+    print("Goal ", pathplan.goal)
+main()
