@@ -2,7 +2,7 @@ import math
 import heapq
 from itertools import combinations
 import yaml
-
+import numpy as np
 
 config_path = './world_map.yaml'
 class PathPlan:
@@ -24,28 +24,28 @@ class PathPlan:
         self.voronoi_vertices = self.create_voronoi_roadmap()
 
     def get_bounds(self, vertices):
-        x, y = zip(*vertices)
-        return min(x), min(y), max(x), max(y)
+        x,y = zip(*vertices)
+        
+        x_min, x_max = min(x), max(x)
+        y_min, y_max = min(y), max(y)
+        return x_min, x_max, y_min, y_max
     
 
     def _in_obstacle(self, point):
         x, y = point
-        xmin, ymin, xmax, ymax = self.box
+        x_min, x_max, y_min, y_max = self.box
         r = self.clearance
 
-        return (
-            xmin - r <= x <= xmax + r
-            and ymin - r <= y <= ymax + r
-        )
+        return x_min + r <= x <= x_max -r and y_min + r <= y <= y_max - r
 
     def _in_world(self, point):
         x, y = point
-        xmin, ymin, xmax, ymax = self.world
+        x_min, x_max, y_min, y_max = self.world
         r = self.clearance
 
         return (
-            xmin + r <= x <= xmax - r
-            and ymin + r <= y <= ymax - r
+            x_min + r <= x <= x_max - r
+            and y_min + r <= y <= y_max - r
         )
 
     def _collision_free(self, p1, p2):
@@ -55,7 +55,7 @@ class PathPlan:
         if self._in_obstacle(p1) or self._in_obstacle(p2):
             return False
 
-        xmin, ymin, xmax, ymax = self.box
+        xmin, xmax, ymin, ymax = self.box
         r = self.clearance
 
         # Check intersection with the expanded obstacle
@@ -84,35 +84,29 @@ class PathPlan:
         return False
 
     def create_shortest_roadmap(self):
-        xmin, ymin, xmax, ymax = self.box
-
+        xmin, xmax, ymin, ymax = self.box
+     
         # Extra offset prevents diagonal edges from
         # cutting through the expanded obstacle corners.
         d = 2 * self.clearance + 0.001
 
+        point_distance_from_corner = d*np.sin(math.pi/4)
         return [
-            (xmin, ymin - d),   # A
-            (xmax, ymin - d),   # B
-            (xmax + d, ymin),   # C
-            (xmax + d, ymax),   # D
-            (xmax, ymax + d),   # E
-            (xmin, ymax + d),   # F
-            (xmin - d, ymax),   # G
-            (xmin - d, ymin)    # H
+            (xmin - point_distance_from_corner, ymin - point_distance_from_corner),   # A
+            (xmax + point_distance_from_corner, ymin - point_distance_from_corner),   # D
+            (xmax + point_distance_from_corner, ymax + point_distance_from_corner),   # E
+            (xmin - point_distance_from_corner, ymax + point_distance_from_corner),   # F
         ]
 
     def create_voronoi_roadmap(self):
-        wxmin, wymin, wxmax, wymax = self.world
-        xmin, ymin, xmax, ymax = self.box
-
-        center_x = (xmin + xmax) / 2
-        center_y = (ymin + ymax) / 2
+        wxmin, wxmax, wymin, wymax = self.world
+        xmin, xmax, ymin, ymax= self.box
 
         return [
-            (center_x, (wymin + ymin) / 2),  # Bottom
-            ((wxmax + xmax) / 2, center_y),  # Right
-            (center_x, (wymax + ymax) / 2),   # Top
-            ((wxmin + xmin) / 2, center_y)   # Left
+            ((xmin + wxmin)/2, (wymin + ymin) / 2),  # Bottom
+            ((wxmax + xmax) / 2, (ymin + wymin)/2),  # Right
+            ((xmax + wxmax)/2, (wymax + ymax) / 2),   # Top
+            ((wxmin + xmin) / 2, (ymax + wymax)/2)   # Left
         ]
 
     def create_adjacency_list(self, vertices):
@@ -204,3 +198,14 @@ class PathPlan:
         )
 
         return self.a_star(adj_list)
+# def main():
+#     pathplan = PathPlan()
+#     print("World coords ", pathplan.world)
+#     print("Box coords ", pathplan.box)
+#     print("Car radius ", pathplan.radius)
+#     print("Car offset ", pathplan.clearance)
+#     print("SP ", pathplan.shortest_vertices)
+#     print("MS ", pathplan.voronoi_vertices)
+#     print("Start ", pathplan.start)
+#     print("Goal ", pathplan.goal)
+# main()
