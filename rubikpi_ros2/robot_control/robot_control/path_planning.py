@@ -88,7 +88,7 @@ class PathPlan:
      
         # Extra offset prevents diagonal edges from
         # cutting through the expanded obstacle corners.
-        d = 2 * self.clearance + 0.001
+        d = self.clearance 
 
         point_distance_from_corner = d*np.sin(math.pi/4)
         return [
