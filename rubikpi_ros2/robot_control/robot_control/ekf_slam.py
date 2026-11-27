@@ -33,24 +33,18 @@ class UpdateResult:
 
 class EKFSLAM:
     def __init__(self, initial_pose=(0., 0., 0.), initial_covariance=None, noise_config=None):
+        """Anchor the map at the initial pose, with zero uncertainty by default."""
+
         self.state = np.array(initial_pose, dtype=float, copy=True)
-        if self.state.shape != (3,) or not np.all(np.isfinite(self.state)):
-            raise ValueError('Initial pose must contain three finite values')
         self.state[2] = self.wrap_angle(self.state[2])
 
-        self.P = np.zeros((3, 3))
+        self.P = np.diag([0.01, 0.01, 0.005]) # dont start cov at 0
         if initial_covariance is not None:
-            P = np.asarray(initial_covariance, dtype=float)
-            if P.shape != (3, 3) or not np.all(np.isfinite(P)) or not np.allclose(P, P.T):
-                raise ValueError('Initial covariance must be finite, symmetric, and 3x3')
-            P = (P + P.T) / 2
-            if np.min(np.linalg.eigvalsh(P)) < -1e-12:
-                raise ValueError('Initial covariance must be positive semidefinite')
-            self.P = P
+            cov = np.asarray(initial_covariance, dtype=float)
+            self.P = (cov + cov.T) /2
 
-        self.landmark_map = {}  # tag_id -> index of landmark x in state
-        self.landmark_indices = self.landmark_map  # Preserve original public attribute
-        self.noise = MotionNoise() if noise_config is None else noise_config
+        self.landmark_map = {}
+        self.motion_noise = MotionNoise()
 
     @staticmethod
     def wrap_angle(angle):
@@ -58,104 +52,95 @@ class EKFSLAM:
 
     # Predict the state and calculate motion Jacobians.
     def pred_state(self, state, v, w, dt):
-        distance = v * dt
-        turn = w * dt
-        midpoint = state[2] + turn / 2
-        c, s = np.cos(midpoint), np.sin(midpoint)
+        distance = v*dt
+        change_in_angle = w*dt
+        facing_angle = change_in_angle/2 + state[2]
+        c,s = np.cos(facing_angle), np.sin(facing_angle)
 
-        pred = state.copy()
-        pred[0] += distance * c
-        pred[1] += distance * s
-        pred[2] = self.wrap_angle(state[2] + turn)
+        pred=state.copy()
+        pred[0] += distance*c
+        pred[1] += distance*s
+        pred[2] = self.wrap_angle(pred[2] + facing_angle)
 
-        F = np.eye(len(state))
-        F[0, 2] = -distance * s
-        F[1, 2] = distance * c
+        F = np.eye(len(self.state))
+        F[0, 2] = (1,0, -distance*s)
+        F[1, 2] = (0,1, distance*c)
 
-        G = np.zeros((len(state), 2))
-        G[:3] = ((c, -distance * s / 2),
-                 (s, distance * c / 2),
-                 (0, 1))
+        G = np.zeros((len(self.state), 2))
+        G[:3] = ((c, -distance*s/2), (s, distance*c/2), (0,1))
         return pred, F, G
+        
+
 
     def calc_P(self, F, G, P, Q):
-        predicted_P = F @ P @ F.T + G @ Q @ G.T
-        return 0.5 * (predicted_P + predicted_P.T)
+        cov = F @ P @ F.T + G @ Q @ G.T
+        return 0.5 * (cov + cov.T)
 
     def predict(self, v, omega, dt):
         if not np.all(np.isfinite((v, omega, dt))) or dt < 0:
             raise ValueError('Prediction requires finite inputs and nonnegative elapsed time')
         if dt == 0:
             return
-
-        # Jacobians are evaluated at the old state.
-        pred, F, G = self.pred_state(self.state, v, omega, dt)
-        d, a = abs(v * dt), abs(omega * dt)
+        pred, F,G = self.pred_state(self.state, v, omega,dt)
+        distance_travelled, angle_turned = abs(v*dt), abs(omega*dt)
         Q = np.diag([
-            self.noise.q_d_per_m * d + self.noise.q_d_per_rad * a,
-            self.noise.q_theta_per_m * d + self.noise.q_theta_per_rad * a,
+            self.motion_noise.q_d_per_m*distance_travelled + self.motion_noise.q_d_per_rad*angle_turned,
+            self.motion_noise.q_theta_per_m*distance_travelled, self.motion_noise.q_theta_per_rad*angle_turned
         ])
-        self.P = self.calc_P(F, G, self.P, Q)
+
+        self.P = self.calc_P(F,G,self.P,Q)
         self.state = pred
 
     # Initialize a new tag in map coordinates, preserving cross-covariance.
     def add_landmark(self, tag_id, z, R):
-        x, y, theta = self.state[:3]
-        c, s = np.cos(theta), np.sin(theta)
-        rotation = np.array([[c, -s], [s, c]])
-        landmark = np.array([x, y]) + rotation @ z
-        n = len(self.state)
+        x,y,theta = self.state[:3]
+        c,s = np.cos(theta), np.sin(theta)
+        rotation = np.array([[c,-s],[s, c]])
+        landmark_init_pred = np.array([x,y]) + rotation @ z
+        zx,zy = z
 
-
-        # J is how much the world coordinate prediction changes as x,y,theta changes (i.e the jacobian of the initial m_x, m_y of the tag the first time it was seen)
-        # [mx]   [cos(theta)  -sin(theta)] [zx]   [xr]
-        # [my] = [sin(theta)   cos(theta)] [zy] + [yr]      
-        J = np.zeros((2, n))
-        J[:, :3] = ((1, 0, -s * z[0] - c * z[1]),
-                    (0, 1,  c * z[0] - s * z[1]))
-
+        J = np.zeros((2, len(self.state)))
+        J[:, :3] = [1,0, -zx*s-zy*c], [0,1, zx*c - zy*s]
 
         #self.P @ J.T = how are errors in the robot and previously mapped landmarks correlated with errors in the new landmark's position?
-        # it is used in the expanded P 
-
-        #       [Cov(xr,    m2x)  Cov(xr,    m2y)]
-        #       [Cov(yr,    m2x)  Cov(yr,    m2y)]
-        #       [Cov(theta, m2x)  Cov(theta, m2y)]
-        #       [Cov(m1x,   m2x)  Cov(m1x,   m2y)]
-        #       [Cov(m1y,   m2x)  Cov(m1y,   m2y)]
-    
+                # it is used in the expanded P 
+        
+                #       [Cov(xr,    m2x)  Cov(xr,    m2y)]
+                #       [Cov(yr,    m2x)  Cov(yr,    m2y)]
+                #       [Cov(theta, m2x)  Cov(theta, m2y)]
+                #       [Cov(m1x,   m2x)  Cov(m1x,   m2y)]
+                #       [Cov(m1y,   m2x)  Cov(m1y,   m2y)]
         cross_covariance = self.P @ J.T
 
         # J @ self.P @ J.T =. how much is uncertainty of the landmark estimate position (J) affected by the uncertainty of the robots state (P)
-        # rotation @ R @ rotation.T = rotate the camera prediction uncertainty from the robot frame into the world frame
-        # landmark_covariance:
-        #
-        #       [Var(m2x)       Cov(m2x, m2y)]
-        #       [Cov(m2y, m2x)  Var(m2y)     ]
-        landmark_covariance = J @ self.P @ J.T + rotation @ R @ rotation.T
+                # rotation @ R @ rotation.T = rotate the camera prediction uncertainty from the robot frame into the world frame
+                # landmark_covariance:
+                #
+                #       [Var(m2x)       Cov(m2x, m2y)]
+                #       [Cov(m2y, m2x)  Var(m2y)     ]
+        landmark_cov = J@self.P@J.T
 
-                # Expand P from (5 x 5) to (7 x 7):
-        #
-        #             Existing state (5)     New Tag 2 (2)
-        #
-        #           +---------------------+----------------+
-        #           |                     |                |
-        # Existing  |       P             | cross_cov      |
-        # state (5) |     (5 x 5)         |   (5 x 2)      |
-        #           |                     |                |
-        #           +---------------------+----------------+
-        #           |                     |                |
-        # Tag 2 (2) |  cross_cov.T        | landmark_cov   |
-        #           |     (2 x 5)         |    (2 x 2)     |
-        #           +---------------------+----------------+
-        #
-        expanded_P = np.block([
-            [self.P, cross_covariance],
-            [cross_covariance.T, landmark_covariance],
-        ])
-        self.landmark_map[tag_id] = n
-        self.state = np.concatenate((self.state, landmark))
-        self.P = 0.5 * (expanded_P + expanded_P.T)
+                 # Expand P from (5 x 5) to (7 x 7):
+                #
+                #             Existing state (5)     New Tag 2 (2)
+                #
+                #           +---------------------+----------------+
+                #           |                     |                |
+                # Existing  |       P             | cross_cov      |
+                # state (5) |     (5 x 5)         |   (5 x 2)      |
+                #           |                     |                |
+                #           +---------------------+----------------+
+                #           |                     |                |
+                # Tag 2 (2) |  cross_cov.T        | landmark_cov   |
+                #           |     (2 x 5)         |    (2 x 2)     |
+                #           +---------------------+----------------+
+                #
+        cov = np.block([[self.P, cross_covariance], [cross_covariance, landmark_cov]])
+
+        self.P = 0.5 * (cov + cov.T)
+        self.landmark_map[tag_id] = len(self.state)
+        self.state = np.concatenate(self.state, landmark_init_pred)
+
 
     # Predict the tag's robot-frame position and measurement Jacobian.
     def calculate_z_pred_and_H(self, tag_id):
